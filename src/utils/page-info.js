@@ -1,0 +1,87 @@
+/**
+ * Page metadata and status tracking
+ */
+
+const crypto = require('crypto');
+const { BufferMode } = require('../types/buffer-types');
+
+/**
+ * Page metadata and status tracking
+ */
+class PageInfo {
+  constructor(pageId, fileOffset, originalSize, checksum = null) {
+    this.pageId = pageId;
+    this.fileOffset = fileOffset; // Original offset in source file
+    this.originalSize = originalSize; // Original size in source file
+    this.checksum = checksum; // Fast checksum for change detection
+    
+    // Runtime state
+    this.isDirty = false; // Has been modified
+    this.isLoaded = false; // Currently in memory
+    this.isDetached = false; // Conflicts with source file
+    this.currentSize = originalSize; // Current size (may differ if modified)
+    this.data = null; // In-memory data buffer
+    this.lastAccess = Date.now();
+    
+    // Line tracking (only relevant for UTF-8 mode)
+    this.originalLineCount = 0; // Lines in original file
+    this.currentLineCount = 0; // Current line count (may differ if modified)
+    this.startsWithNewline = false;
+    this.endsWithNewline = false;
+  }
+
+  /**
+   * Calculate fast checksum for change detection
+   * @param {Buffer} data - Data to checksum
+   * @returns {string} - Checksum
+   */
+  static calculateChecksum(data) {
+    return crypto.createHash('md5').update(data).digest('hex');
+  }
+
+  /**
+   * Update page with new data
+   * @param {Buffer} data - New data
+   * @param {string} mode - Buffer mode (binary or utf8)
+   */
+  updateData(data, mode = BufferMode.BINARY) {
+    this.data = data;
+    this.currentSize = data.length;
+    this.isDirty = true;
+    this.isLoaded = true;
+    this.lastAccess = Date.now();
+    
+    // Update line count only in UTF-8 mode
+    if (mode === BufferMode.UTF8) {
+      this.currentLineCount = this._countLines(data);
+      this.startsWithNewline = data.length > 0 && data[0] === 0x0A;
+      this.endsWithNewline = data.length > 0 && data[data.length - 1] === 0x0A;
+    }
+  }
+
+  /**
+   * Count lines in buffer (UTF-8 safe)
+   * @param {Buffer} data - Data buffer
+   * @returns {number} - Line count
+   */
+  _countLines(data) {
+    let count = 0;
+    for (let i = 0; i < data.length; i++) {
+      if (data[i] === 0x0A) count++; // \n
+    }
+    return count;
+  }
+
+  /**
+   * Verify page integrity against original file
+   * @param {Buffer} originalData - Data from original file
+   * @returns {boolean} - True if page matches original
+   */
+  verifyIntegrity(originalData) {
+    if (!this.checksum) return false;
+    const currentChecksum = PageInfo.calculateChecksum(originalData);
+    return currentChecksum === this.checksum;
+  }
+}
+
+module.exports = { PageInfo };

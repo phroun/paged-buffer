@@ -1,0 +1,77 @@
+# Source files (only ship compiled lib/)
+src/
+
+# Tests
+__tests__/
+*.test.js
+*.spec.js
+test/
+tests/
+
+# Development configuration files
+.eslintrc*
+.eslintignore
+eslint.config.js
+jest.config.js
+tsconfig.json
+jsdoc.conf.json
+
+# Development dependencies and tools
+.babelrc*
+.prettierrc*
+.editorconfig
+nodemon.json
+
+# Coverage reports
+coverage/
+.nyc_output/
+
+# Documentation source (ship generated docs only)
+docs-src/
+
+# Development files
+*.log
+.env*
+.DS_Store
+
+# Development directories
+node_modules/
+.vscode/
+.idea/
+
+# CI/CD files
+.github/
+.travis.yml
+.circleci/
+azure-pipelines*.yml
+Jenkinsfile
+
+# Temporary files
+tmp/
+temp/
+
+# Editor files
+*.swp
+*.swo
+*~
+
+# OS files
+Thumbs.db
+ehthumbs.db
+
+# Development scripts that shouldn't be published
+scripts/dev-*
+scripts/test-*
+
+# Example files (unless you want to ship them)
+examples/dev-*
+
+# Build artifacts that shouldn't be published
+build/
+dist/
+
+# Only keep essential files for production use:
+# - lib/ (compiled code)
+# - README.md
+# - LICENSE
+# - package.json

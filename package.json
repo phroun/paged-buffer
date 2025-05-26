@@ -1,0 +1,78 @@
+{
+  "name": "@phroun/paged-buffer",
+  "version": "0.1.0",
+  "description": "High-performance buffer system for editing massive files with intelligent memory management, marks, and undo/redo capabilities",
+  "main": "lib/index.js",
+  "types": "lib/index.d.ts",
+  "files": [
+    "lib/**/*",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "test": "jest",
+    "test:watch": "jest --watch",
+    "test:coverage": "jest --coverage",
+    "lint": "eslint src/**/*.js",
+    "lint:fix": "eslint src/**/*.js --fix",
+    "prepublishOnly": "npm run build && npm test",
+    "docs": "jsdoc -c jsdoc.conf.json",
+    "clean": "rimraf lib coverage docs"
+  },
+  "keywords": [
+    "buffer",
+    "file-editing",
+    "large-files",
+    "memory-management",
+    "undo-redo",
+    "marks",
+    "paging",
+    "text-editor",
+    "massive-files"
+  ],
+  "author": "Jeffrey R. Day <phroun@gmail.com>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/phroun/paged-buffer.git"
+  },
+  "bugs": {
+    "url": "https://github.com/your-org/paged-buffer/issues"
+  },
+  "homepage": "https://github.com/your-org/paged-buffer#readme",
+  "engines": {
+    "node": ">=14.14.0"
+  },
+  "devDependencies": {
+    "@types/jest": "^29.5.0",
+    "@types/node": "^18.15.0",
+    "eslint": "^8.36.0",
+    "eslint-config-standard": "^17.0.0",
+    "eslint-plugin-import": "^2.27.0",
+    "eslint-plugin-jest": "^27.2.0",
+    "eslint-plugin-node": "^11.1.0",
+    "eslint-plugin-promise": "^6.1.0",
+    "jest": "^29.7.0",
+    "jsdoc": "^4.0.0",
+    "rimraf": "^4.4.0",
+    "typescript": "^5.0.0"
+  },
+  "eslintConfig": {
+    "extends": [
+      "standard",
+      "plugin:jest/recommended"
+    ],
+    "env": {
+      "node": true,
+      "jest": true
+    },
+    "rules": {
+      "no-console": "warn",
+      "prefer-const": "error"
+    }
+  },
+  "dependencies": {
+    "jest-junit": "^16.0.0"
+  }
+}
