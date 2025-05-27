@@ -17,6 +17,7 @@ const { NotificationType, BufferNotification } = require('./types/notifications'
 const { PageStorage } = require('./storage/page-storage');
 const { MemoryPageStorage } = require('./storage/memory-page-storage');
 const { PageInfo } = require('./utils/page-info');
+const { SafeFileWriter, SaveStrategy } = require('./utils/safe-file-writer');
 
 /**
  * PagedBuffer - Core buffer implementation with byte-level operations
@@ -955,80 +956,6 @@ class PagedBuffer {
     return {deletedText, newLineStarts};
   }
 
-  // =================== FILE OPERATIONS ===================
-
-  /**
-   * Save the buffer to a file
-   * @param {string} [filename] - Optional filename to save to
-   */
-  async saveFile(filename = this.filename) {
-    if (!filename) {
-      throw new Error('No filename specified');
-    }
-
-    if (this.state === BufferState.DETACHED) {
-      throw new Error('Buffer is detached - must use saveAs() with complete data verification');
-    }
-
-    const fd = await fs.open(filename, 'w');
-    
-    try {
-      for (const [pageId, pageInfo] of this.pages) {
-        await this._ensurePageLoaded(pageInfo);
-        if (pageInfo.data && pageInfo.data.length > 0) {
-          await fd.write(pageInfo.data);
-        }
-      }
-    } finally {
-      await fd.close();
-    }
-    
-    const stats = await fs.stat(filename);
-    this.filename = filename;
-    this.fileSize = stats.size;
-    this.fileMtime = stats.mtime;
-    this.totalSize = stats.size;
-    this.state = BufferState.CLEAN;
-    
-    for (const pageInfo of this.pages.values()) {
-      pageInfo.isDirty = false;
-      pageInfo.isDetached = false;
-    }
-  }
-
-  /**
-   * Save as new file (for detached buffers)
-   * @param {string} filename - New filename
-   * @param {boolean} forcePartial - Allow saving partial data
-   */
-  async saveAs(filename, forcePartial = false) {
-    if (this.state === BufferState.DETACHED && !forcePartial) {
-      const missingPages = [];
-      for (const [pageId, pageInfo] of this.pages) {
-        if (!pageInfo.isLoaded && !pageInfo.isDirty) {
-          missingPages.push(pageId);
-        }
-      }
-      
-      if (missingPages.length > 0) {
-        throw new Error(`Cannot save detached buffer - missing pages: ${missingPages.join(', ')}`);
-      }
-    }
-    
-    // Temporarily change state to allow saving
-    const originalState = this.state;
-    this.state = BufferState.MODIFIED;
-    
-    try {
-      await this.saveFile(filename);
-    } finally {
-      // Restore original state if save failed
-      if (this.state !== BufferState.CLEAN) {
-        this.state = originalState;
-      }
-    }
-  }
-
   // =================== UNDO/REDO SYSTEM ===================
 
   /**
@@ -1240,6 +1167,148 @@ class PagedBuffer {
    */
   setChangeStrategy(strategies) {
     this.changeStrategy = { ...this.changeStrategy, ...strategies };
+  }
+
+  // =================== FILE METHODS ===================
+
+  /**
+   * Save the buffer using safe conflict-aware strategies
+   * @param {string} [filename] - Filename to save to (defaults to current filename)
+   * @param {Object} options - Save options
+   */
+  async saveFile(filename = this.filename, options = {}) {
+    if (!filename) {
+      throw new Error('No filename specified');
+    }
+
+    if (this.state === BufferState.DETACHED) {
+      throw new Error('Buffer is detached - must use saveAs() with complete data verification');
+    }
+
+    const writer = new SafeFileWriter(this, options);
+    await writer.save(filename, options);
+    
+    // Ensure state is updated after successful save
+    // This is a safety check in case the SafeFileWriter didn't update it
+    if (this.state !== BufferState.CLEAN) {
+      await this._updateMetadataAfterSave(filename);
+    }
+  }
+
+  /**
+   * Save to a new filename (save-as operation)
+   * @param {string} filename - New filename
+   * @param {Object} options - Save options
+   */
+  async saveAs(filename, options = {}) {
+    if (!filename) {
+      throw new Error('Filename required for saveAs operation');
+    }
+
+    // Save-as operations are always safe (no in-place conflicts)
+    const writer = new SafeFileWriter(this, options);
+    await writer.save(filename, options);
+    
+    // Ensure state is updated after successful save
+    // This is a safety check in case the SafeFileWriter didn't update it
+    if (this.state !== BufferState.CLEAN) {
+      await this._updateMetadataAfterSave(filename);
+    }
+  }
+
+  /**
+   * Analyze modifications without performing save (for diagnostics)
+   * @param {string} [filename] - Target filename for analysis (defaults to current)
+   * @returns {Object} Analysis result
+   */
+  analyzeModifications(filename = this.filename) {
+    if (!filename) {
+      throw new Error('Filename required for modification analysis');
+    }
+
+    const { ModificationAnalyzer } = require('./utils/safe-file-writer');
+    const analyzer = new ModificationAnalyzer(this);
+    return analyzer.analyze(filename);
+  }
+
+  /**
+   * Get save strategy recommendation
+   * @param {string} [filename] - Target filename (defaults to current)
+   * @returns {Object} Strategy info
+   */
+  getSaveStrategy(filename = this.filename) {
+    if (!filename) {
+      throw new Error('Filename required for strategy analysis');
+    }
+
+    const analysis = this.analyzeModifications(filename);
+    return {
+      strategy: analysis.strategy,
+      riskLevel: analysis.riskLevel,
+      conflictCount: analysis.conflicts.length,
+      isNewFile: analysis.isNewFile,
+      stats: analysis.stats,
+      recommendation: this._getStrategyRecommendation(analysis)
+    };
+  }
+
+  /**
+   * Get human-readable strategy recommendation
+   * @private
+   */
+  _getStrategyRecommendation(analysis) {
+    const recommendations = {
+      [SaveStrategy.NEW_FILE]: {
+        description: "Writing to new file - no conflicts possible",
+        diskSpace: "No extra space needed",
+        speed: "Fast"
+      },
+      [SaveStrategy.SAFE_INPLACE]: {
+        description: "Safe to overwrite file directly - no conflicts detected",
+        diskSpace: "Backup space only",
+        speed: "Fastest"
+      },
+      [SaveStrategy.REVERSE_ORDER]: {
+        description: "Write pages in reverse order to avoid conflicts",
+        diskSpace: "Backup space only",
+        speed: "Fast"
+      },
+      [SaveStrategy.PARTIAL_TEMP]: {
+        description: `Buffer ${Math.round(analysis.stats.conflictSize / 1024 / 1024)}MB of conflicting data`,
+        diskSpace: `${Math.round(analysis.stats.conflictSize / 1024 / 1024)}MB temporary buffers + backup`,
+        speed: "Moderate"
+      },
+      [SaveStrategy.ATOMIC_TEMP]: {
+        description: "Write to temporary file then rename (safest)",
+        diskSpace: "Full file size temporarily",
+        speed: "Slower for large files"
+      }
+    };
+
+    return recommendations[analysis.strategy] || {
+      description: "Unknown strategy",
+      diskSpace: "Unknown",
+      speed: "Unknown"
+    };
+  }
+
+  /**
+   * Update buffer metadata after successful save (called by SafeFileWriter)
+   * @private
+   */
+  async _updateMetadataAfterSave(filename) {
+    const stats = await fs.stat(filename);
+    this.filename = filename;
+    this.fileSize = stats.size;
+    this.fileMtime = stats.mtime;
+    this.totalSize = stats.size;
+    this.state = BufferState.CLEAN;
+    
+    // Mark all pages as clean
+    for (const pageInfo of this.pages.values()) {
+      pageInfo.isDirty = false;
+      pageInfo.isDetached = false;
+    }
   }
 }
 
