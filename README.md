@@ -2,10 +2,14 @@
 
 [![npm version](https://badge.fury.io/js/%40phroun%2Fpaged-buffer.svg)](https://badge.fury.io/js/%40phroun%2Fpaged-buffer)
 [![Build Status](https://github.com/phroun/paged-buffer/workflows/CI/badge.svg)](https://github.com/phroun/paged-buffer/actions)
-[![Coverage Status](https://coveralls.io/repos/github/phroun/paged-buffer/badge.svg?branch=main)](https://coveralls.io/github/phroun/paged-buffer?branch=main)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 A high-performance, byte-level buffer system for editing massive files with intelligent memory management and undo/redo capabilities.
+
+## Requirements
+
+- **Node.js**: This is a Node.js-only library that uses native modules (`fs`, `crypto`, `os`)
+- **Environment**: Server-side or desktop applications (not browser-compatible)
 
 ## Features
 
@@ -35,7 +39,11 @@ const buffer = new PagedBuffer(64 * 1024, storage, 100);
 await buffer.loadFile('huge-file.txt');
 
 // Enable undo system
-buffer.enableUndo();
+buffer.enableUndo({ maxUndoLevels: 50 });
+buffer.undoSystem.configure({
+  mergeTimeWindow: 15000,     // Merge operations within 15 seconds
+  mergePositionWindow: 1000   // Merge operations within 1000 bytes
+});
 
 // Edit the file at byte level
 await buffer.insertBytes(1000, Buffer.from('Hello World'));
@@ -131,10 +139,10 @@ const {deletedText, newLineStarts} = await buffer.deleteTextBetweenPositions(
 ### Undo/Redo System
 
 ```javascript
-// Enable undo with configuration
-buffer.enableUndo({
-  maxUndoLevels: 1000,        // Maximum undo steps
-  mergeTimeWindow: 15000,     // Merge operations within 15 seconds
+// Enable undo with configuration (two-step process)
+buffer.enableUndo({ maxUndoLevels: 1000 });
+buffer.undoSystem.configure({
+  mergeTimeWindow: 15000,     // Merge operations within 15 seconds  
   mergePositionWindow: 1000   // Merge operations within 1000 bytes
 });
 
@@ -155,6 +163,10 @@ await buffer.rollbackUndoTransaction();
 // Transaction status
 const inTransaction = buffer.inUndoTransaction();
 const txInfo = buffer.getCurrentUndoTransaction();
+
+// Get undo system statistics
+const stats = buffer.undoSystem.getStats();
+console.log(`Undo levels: ${stats.undoGroups}, Memory: ${stats.memoryUsage} bytes`);
 ```
 
 ### File Change Handling
@@ -169,7 +181,13 @@ buffer.setChangeStrategy({
 
 // Manual change detection
 const changeInfo = await buffer.checkFileChanges();
-const handled = await buffer.handleFileChanges(changeInfo);
+console.log('File changed:', changeInfo.changed);
+console.log('Size changed:', changeInfo.sizeChanged);
+console.log('Modified time changed:', changeInfo.mtimeChanged);
+console.log('File deleted:', changeInfo.deleted);
+
+// The buffer automatically handles file changes based on your configured strategy
+// There's no separate handleFileChanges() method - changes are processed internally
 ```
 
 ### Storage Backends
@@ -190,6 +208,23 @@ class CustomStorage extends PageStorage {
 }
 ```
 
+### Memory Management & Monitoring
+
+```javascript
+// Get detailed memory statistics
+const stats = buffer.getMemoryStats();
+console.log(`Total pages: ${stats.totalPages}`);
+console.log(`Loaded pages: ${stats.loadedPages}/${stats.maxMemoryPages}`);
+console.log(`Dirty pages: ${stats.dirtyPages}`);
+console.log(`Memory used: ${stats.memoryUsed} bytes`);
+console.log(`Undo memory: ${stats.undo.memoryUsage} bytes`);
+
+// Advanced page management happens automatically:
+// - LRU eviction when memory limits are reached
+// - Automatic page splitting when pages grow too large
+// - Integrity verification for file-backed pages
+```
+
 ## Building a Text Editor on Top
 
 Here's how you might build line-based operations in your text editor:
@@ -205,6 +240,13 @@ class TextEditor {
   async loadFile(filename) {
     await this.buffer.loadFile(filename);
     this.lineStarts = await this.buffer.getLineStarts();
+    
+    // Enable undo with custom configuration
+    this.buffer.enableUndo({ maxUndoLevels: 500 });
+    this.buffer.undoSystem.configure({
+      mergeTimeWindow: 5000,    // Shorter window for responsive editing
+      mergePositionWindow: 100  // Merge nearby character operations
+    });
   }
 
   async insertLine(lineNum, text) {
@@ -259,7 +301,7 @@ console.log(`Memory: ${stats.memoryUsed} bytes`);
 console.log(`Pages: ${stats.loadedPages}/${stats.totalPages}`);
 ```
 
-### Batch Operations
+### Batch Operations with Transactions
 
 ```javascript
 // Group related operations
@@ -279,6 +321,9 @@ for (const {line, character, oldText, newText} of replacements) {
 }
 
 buffer.commitUndoTransaction(); // Single undo step
+
+// Or rollback if something goes wrong
+// await buffer.rollbackUndoTransaction();
 ```
 
 ### Error Handling
@@ -292,7 +337,14 @@ try {
 
 // Handle detached buffers
 if (buffer.getState() === 'detached') {
+  console.warn('Buffer is detached from file - saving to backup');
   await buffer.saveAs('backup-file.txt', true);
+}
+
+// Handle corrupted state
+if (buffer.getState() === 'corrupted') {
+  console.error('Buffer integrity compromised');
+  // Handle data recovery scenario
 }
 ```
 
@@ -304,6 +356,8 @@ The buffer uses sophisticated memory management:
 - **LRU Eviction**: Least recently used pages are evicted when memory limit is reached  
 - **Lazy Evaluation**: Operations are deferred until actually needed
 - **Delta Storage**: Undo operations store only changes, not entire content
+- **Automatic Page Splitting**: Large pages are automatically split to maintain performance
+- **Integrity Verification**: File-backed pages are verified against checksums
 
 For a 10GB file with default settings:
 - **Initial Load**: ~6MB memory (metadata only)
@@ -349,8 +403,37 @@ buffer.onNotification((notification) => {
     case 'buffer_detached':
       // Buffer conflicts with file
       break;
+    case 'memory_pressure':
+      // System is evicting pages due to memory limits
+      break;
+    case 'page_conflict_detected':
+      // Page integrity issues detected
+      break;
   }
 });
+
+// Clear notifications
+buffer.clearNotifications(); // Clear all
+buffer.clearNotifications('memory_pressure'); // Clear specific type
+
+// Get all notifications
+const notifications = buffer.getNotifications();
+```
+
+## Testing Support
+
+The library includes features for testing environments:
+
+```javascript
+// Custom clock for deterministic testing
+buffer.undoSystem.setClock(() => mockTimestamp);
+
+// Reset operation counters (for testing)
+const { resetOperationCounter } = require('@phroun/paged-buffer');
+resetOperationCounter();
+
+// Memory storage for fast tests
+const buffer = new PagedBuffer(1024, new MemoryPageStorage(), 10);
 ```
 
 ## Testing
@@ -386,8 +469,11 @@ MIT License - see [LICENSE](LICENSE) file for details.
 ### 0.1.0
 - Initial release
 - Core paged buffer functionality with byte-level operations
-- Transaction-based undo/redo system
-- File change detection and handling
+- Transaction-based undo/redo system with intelligent merging
+- File change detection and handling with configurable strategies
 - Line information helpers for UTF-8 files
+- Comprehensive notification system
+- Multiple storage backend support
+- Advanced memory management with LRU eviction
 - Comprehensive test suite
 - Full documentation
