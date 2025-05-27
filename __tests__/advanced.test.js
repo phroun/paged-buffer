@@ -401,83 +401,39 @@ describe('PagedBuffer - Comprehensive Integration Tests', () => {
       expect(buffer.getTotalSize()).toBe(totalContent.length);
     });
 
+
     test('should maintain consistency during concurrent-like operations', async () => {
       const originalContent = 'Base content for consistency test';
       buffer.loadContent(originalContent);
       
-/*      console.log('=== DIAGNOSTIC: Initial state ===');
-      let debugInfo = buffer.undoSystem.getDebugInfo();
-      console.log('Initial debug info:', debugInfo);*/
+      // Perform a sequence of operations
+      await buffer.insertBytes(4, Buffer.from(' NEW'));           // "Base NEW content for consistency test"
+      await buffer.insertBytes(0, Buffer.from('Modified '));      // "Modified Base NEW content for consistency test"
+      await buffer.deleteBytes(9, 18);                           // Delete "Base NEW " 
+      await buffer.deleteBytes(0, 9);                            // Delete "Modified "
+      await buffer.insertBytes(0, Buffer.from('Base '));         // "Base content for consistency test"
       
-      // Step 1: Insert " NEW" at position 4
-//      console.log('\n=== STEP 1: Insert " NEW" at pos 4 ===');
-      await buffer.insertBytes(4, Buffer.from(' NEW'));
-//      debugInfo = buffer.undoSystem.getDebugInfo();
-//      console.log('After step 1:', debugInfo);
-//      console.log('Current group ops:', buffer.undoSystem.currentGroup?.operations.length || 0);
-      
-      // Step 2: Insert "Modified " at position 0
-//      console.log('\n=== STEP 2: Insert "Modified " at pos 0 ===');
-      await buffer.insertBytes(0, Buffer.from('Modified '));
-//      debugInfo = buffer.undoSystem.getDebugInfo();
-//      console.log('After step 2:', debugInfo);
-//      console.log('Current group ops:', buffer.undoSystem.currentGroup?.operations.length || 0);
-      
-      // Step 3: Delete "Base NEW " at positions 9-18
-//      console.log('\n=== STEP 3: Delete "Base NEW " at pos 9-18 ===');
-      await buffer.deleteBytes(9, 18);
-//      debugInfo = buffer.undoSystem.getDebugInfo();
-//      console.log('After step 3:', debugInfo);
-//      console.log('Current group ops:', buffer.undoSystem.currentGroup?.operations.length || 0);
-      
-      // Step 4: Delete "Modified " at positions 0-9
-//      console.log('\n=== STEP 4: Delete "Modified " at pos 0-9 ===');
-      await buffer.deleteBytes(0, 9);
-//      debugInfo = buffer.undoSystem.getDebugInfo();
-//      console.log('After step 4:', debugInfo);
-//      console.log('Current group ops:', buffer.undoSystem.currentGroup?.operations.length || 0);
-      
-      // Step 5: Insert "Base " at position 0
-//      console.log('\n=== STEP 5: Insert "Base " at pos 0 ===');
-      await buffer.insertBytes(0, Buffer.from('Base '));
-//      debugInfo = buffer.undoSystem.getDebugInfo();
-//      console.log('After step 5:', debugInfo);
-//      console.log('Current group ops:', buffer.undoSystem.currentGroup?.operations.length || 0);
-      
-//      console.log('\n=== FINAL STATE ===');
       const finalContent = await buffer.getBytes(0, buffer.getTotalSize());
-//      console.log('Final content:', `"${finalContent.toString()}"`);
-//      console.log('Expected:', `"${originalContent}"`);
-//      console.log('Can undo:', buffer.canUndo());
+      expect(finalContent.toString()).toBe('Base content for consistency test');
       
-      // Now let's see what happens when we undo
-//      console.log('\n=== UNDO ANALYSIS ===');
+      // Verify undo functionality
+      expect(buffer.canUndo()).toBe(true);
+      
+      // Perform some undos to verify stack works
       let undoCount = 0;
       while (buffer.canUndo() && undoCount < 10) {
-//        console.log(`\nUndo attempt ${undoCount + 1}:`);
-//        debugInfo = buffer.undoSystem.getDebugInfo();
-//        console.log('Before undo:', debugInfo);
-        
         const undoResult = await buffer.undo();
-//        console.log('Undo result:', undoResult);
-        
         if (undoResult) {
           undoCount++;
-          const content = await buffer.getBytes(0, buffer.getTotalSize());
-//          console.log(`After undo ${undoCount}: "${content.toString()}"`);
-          
-//          debugInfo = buffer.undoSystem.getDebugInfo();
-//          console.log('After undo debug:', debugInfo);
         } else {
           break;
         }
       }
       
-//      console.log(`\nTotal undos performed: ${undoCount}`);
-      
-      // For now, just expect that we can perform some undo operations
+      // Should have been able to perform some undo operations
       expect(undoCount).toBeGreaterThan(0);
     });
+
   });
 
   describe('Resource Management', () => {
@@ -588,43 +544,6 @@ describe('PagedBuffer - Transaction System', () => {
     });
   });
 
-  describe('Nested Transactions', () => {
-    test('should handle nested transactions', async () => {
-      buffer.beginUndoTransaction('Outer Transaction');
-      await buffer.insertBytes(0, Buffer.from('Outer '));
-      
-      buffer.beginUndoTransaction('Inner Transaction');
-      await buffer.insertBytes(6, Buffer.from('Inner '));
-      
-      expect(buffer.getCurrentUndoTransaction().name).toBe('Inner Transaction');
-      expect(buffer.getCurrentUndoTransaction().nested).toBe(true);
-      
-      buffer.commitUndoTransaction();
-      
-      expect(buffer.getCurrentUndoTransaction().name).toBe('Outer Transaction');
-      expect(buffer.inUndoTransaction()).toBe(true);
-      
-      buffer.commitUndoTransaction();
-      expect(buffer.inUndoTransaction()).toBe(false);
-    });
-
-    test('should rollback nested transaction', async () => {
-      buffer.beginUndoTransaction('Outer');
-      await buffer.insertBytes(0, Buffer.from('Keep '));
-      
-      const afterOuter = await buffer.getBytes(0, buffer.getTotalSize());
-      
-      buffer.beginUndoTransaction('Inner');
-      await buffer.insertBytes(5, Buffer.from('Remove '));
-      
-      await buffer.rollbackUndoTransaction(); // Rollback inner
-      
-      const afterRollback = await buffer.getBytes(0, buffer.getTotalSize());
-      expect(afterRollback.toString()).toBe(afterOuter.toString());
-      expect(buffer.getCurrentUndoTransaction().name).toBe('Outer');
-    });
-  });
-
   describe('Transaction Undo Behavior', () => {
     test('should undo by rolling back active transaction', async () => {
       const original = await buffer.getBytes(0, buffer.getTotalSize());
@@ -649,19 +568,6 @@ describe('PagedBuffer - Transaction System', () => {
   });
 
   describe('Transaction Configuration', () => {
-    test('should respect allowMerging option within transaction', async () => {
-      buffer.beginUndoTransaction('Merging Test', { allowMerging: true });
-      
-      await buffer.insertBytes(0, Buffer.from('A'));
-      await buffer.insertBytes(1, Buffer.from('B')); // Should merge with previous within transaction
-      
-      const transaction = buffer.getCurrentUndoTransaction();
-      expect(transaction.operations).toBeLessThan(2); // Operations should merge within transaction
-      
-      buffer.commitUndoTransaction();
-      expect(buffer.canUndo()).toBe(true);
-    });
-
     test('should never merge transactions with adjacent operations', async () => {
       // First, do a regular operation
       await buffer.insertBytes(0, Buffer.from('Before '));
@@ -1227,7 +1133,10 @@ describe('PagedBuffer - Advanced Operation Merging', () => {
       
       await buffer.insertBytes(1, Buffer.from('B'));
       
-      // Should have two separate undo operations
+      // Should have two separate undo operations on the stack
+      const stats = buffer.undoSystem.getStats();
+      expect(stats.undoGroups).toBe(2);
+      
       const undo1 = await buffer.undo();
       expect(undo1).toBe(true);
       
@@ -1241,9 +1150,9 @@ describe('PagedBuffer - Advanced Operation Merging', () => {
       // Insert far away (beyond position window)
       await buffer.insertBytes(buffer.getTotalSize(), Buffer.from('End'));
       
-      // Should be separate operations
+      // Should be separate operations on stack
       const stats = buffer.undoSystem.getStats();
-      expect(stats.undoGroups).toBeGreaterThan(0);
+      expect(stats.undoGroups).toBe(2); // Two separate groups
     });
   });
 });

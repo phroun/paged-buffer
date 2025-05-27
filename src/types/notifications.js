@@ -1,5 +1,6 @@
 /**
  * Notification types for buffer events
+ * @enum {string}
  */
 const NotificationType = {
   // File system events
@@ -35,8 +36,16 @@ const NotificationType = {
 
 /**
  * Notification for buffer events
+ * @class BufferNotification
  */
 class BufferNotification {
+  /**
+   * Create a buffer notification
+   * @param {string} type - Notification type from NotificationType enum
+   * @param {string} severity - Severity level ('info', 'warning', 'error', 'critical')
+   * @param {string} message - Human-readable message
+   * @param {Object} [metadata={}] - Additional notification data
+   */
   constructor(type, severity, message, metadata = {}) {
     this.type = type;
     this.severity = severity; // 'info', 'warning', 'error', 'critical'

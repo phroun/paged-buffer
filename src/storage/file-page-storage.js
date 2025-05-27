@@ -8,7 +8,8 @@ const os = require('os');
 const { PageStorage } = require('./page-storage');
 
 /**
- * Default file-based page storage
+ * File-based page storage implementation
+ * @extends PageStorage
  */
 class FilePageStorage extends PageStorage {
   constructor(tempDir = null) {

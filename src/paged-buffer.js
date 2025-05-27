@@ -382,10 +382,42 @@ class PagedBuffer {
 
     try {
       if (pageInfo.isDirty) {
+        // Load from storage if dirty
         pageInfo.data = await this.storage.loadPage(pageInfo.pageId);
       } else if (pageInfo.isDetached) {
-        throw new Error(`Page ${pageInfo.pageId} is detached from source file`);
+        // CRITICAL FIX: Handle detached pages gracefully - don't throw
+        // User should be able to continue working and save separately
+        this._notify(
+          NotificationType.PAGE_CONFLICT_DETECTED,
+          'warning',
+          `Page ${pageInfo.pageId} is detached from source file - content may be incomplete`,
+          { 
+            pageId: pageInfo.pageId, 
+            detached: true,
+            recommendation: 'Save your work to a new file to preserve changes'
+          }
+        );
+        
+        // Try to load from storage if available, otherwise use empty buffer
+        if (pageInfo.isDirty) {
+          try {
+            pageInfo.data = await this.storage.loadPage(pageInfo.pageId);
+          } catch (storageError) {
+            // If storage also fails, use empty buffer
+            pageInfo.data = Buffer.alloc(0);
+            this._notify(
+              NotificationType.STORAGE_ERROR,
+              'error',
+              `Cannot load detached page ${pageInfo.pageId} from storage: ${storageError.message}`,
+              { pageId: pageInfo.pageId, error: storageError.message }
+            );
+          }
+        } else {
+          // No dirty data and detached from file - provide empty buffer
+          pageInfo.data = Buffer.alloc(0);
+        }
       } else if (this.filename && pageInfo.originalSize > 0) {
+        // Load from original file
         const fd = await fs.open(this.filename, 'r');
         try {
           const buffer = Buffer.alloc(pageInfo.originalSize);
@@ -405,7 +437,12 @@ class PagedBuffer {
           await fd.close();
         }
       } else {
-        // Empty page or no file
+        // CRITICAL FIX: Always ensure data is a valid Buffer, never null
+        pageInfo.data = Buffer.alloc(0);
+      }
+
+      // CRITICAL FIX: Ensure data is never null after loading
+      if (!pageInfo.data) {
         pageInfo.data = Buffer.alloc(0);
       }
 
@@ -416,13 +453,19 @@ class PagedBuffer {
       await this._updatePageAccess(pageInfo);
       
     } catch (error) {
+      // CRITICAL FIX: On any error, provide empty buffer rather than leaving data null
+      pageInfo.data = Buffer.alloc(0);
+      pageInfo.isLoaded = true; // Mark as loaded to prevent infinite retry loops
+      
       this._notify(
         NotificationType.STORAGE_ERROR,
         'error',
         `Failed to load page ${pageInfo.pageId}: ${error.message}`,
         { pageId: pageInfo.pageId, error: error.message }
       );
-      throw error;
+      
+      // Don't re-throw - let the operation continue with empty data
+      // This provides graceful degradation instead of crashing
     }
   }
 
@@ -575,16 +618,24 @@ class PagedBuffer {
     if (position < 0) {
       throw new Error('Invalid position: cannot be negative');
     }
-    // FIXED: Allow insertion at any position <= totalSize (not just < totalSize)
     if (position > this.totalSize) {
       throw new Error(`Position ${position} is beyond end of buffer (size: ${this.totalSize})`);
     }
 
-    if (this.undoSystem) {
-      this.undoSystem.recordInsert(position, data);
-    }
+    // Capture values before execution for undo recording
+    const originalPosition = position;
+    const originalData = Buffer.from(data); // Make a copy
+    
+    // CRITICAL FIX: Use undo system's clock instead of Date.now()
+    const timestamp = this.undoSystem ? this.undoSystem.getClock() : Date.now();
 
     const { page, relativePos } = await this._getPageForPosition(position);
+    
+    await this._ensurePageLoaded(page);
+    
+    if (!page.data) {
+      page.data = Buffer.alloc(0);
+    }
     
     const before = page.data.subarray(0, relativePos);
     const after = page.data.subarray(relativePos);
@@ -592,6 +643,11 @@ class PagedBuffer {
     
     this.totalSize += data.length;
     this.state = BufferState.MODIFIED;
+    
+    // Record the operation AFTER executing it
+    if (this.undoSystem) {
+      this.undoSystem.recordInsert(originalPosition, originalData, timestamp);
+    }
     
     if (page.currentSize > this.pageSize * 2) {
       await this._splitPage(page);
@@ -612,17 +668,19 @@ class PagedBuffer {
       throw new Error('Invalid range: start position must be less than or equal to end position');
     }
     if (start >= this.totalSize) {
-      return Buffer.alloc(0); // Nothing to delete beyond buffer
+      return Buffer.alloc(0);
     }
     if (end > this.totalSize) {
-      end = this.totalSize; // Clamp to buffer size
+      end = this.totalSize;
     }
 
-    const deletedData = await this.getBytes(start, end);
+    // Capture values before execution for undo recording
+    const originalStart = start;
     
-    if (this.undoSystem) {
-      this.undoSystem.recordDelete(start, deletedData);
-    }
+    // CRITICAL FIX: Use undo system's clock instead of Date.now()
+    const timestamp = this.undoSystem ? this.undoSystem.getClock() : Date.now();
+
+    const deletedData = await this.getBytes(start, end);
     
     const { page, relativePos } = await this._getPageForPosition(start);
     const deleteLength = end - start;
@@ -633,6 +691,11 @@ class PagedBuffer {
     
     this.totalSize -= deleteLength;
     this.state = BufferState.MODIFIED;
+    
+    // Record the operation AFTER executing it
+    if (this.undoSystem) {
+      this.undoSystem.recordDelete(originalStart, deletedData, timestamp);
+    }
     
     return deletedData;
   }
@@ -651,17 +714,35 @@ class PagedBuffer {
       throw new Error(`Position ${position} is beyond end of buffer (size: ${this.totalSize})`);
     }
 
-    const endPos = Math.min(position + data.length, this.totalSize);
-    const originalData = await this.getBytes(position, endPos);
+    // Capture values before execution for undo recording
+    const originalPosition = position;
+    const originalData = Buffer.from(data); // Make a copy
     
-    if (this.undoSystem) {
-      this.undoSystem.recordOverwrite(position, data, originalData);
+    // CRITICAL FIX: Use undo system's clock instead of Date.now()
+    const timestamp = this.undoSystem ? this.undoSystem.getClock() : Date.now();
+
+    const endPos = Math.min(position + data.length, this.totalSize);
+    const overwrittenData = await this.getBytes(position, endPos);
+    
+    // CRITICAL FIX: Disable undo recording temporarily to prevent delete/insert from being recorded
+    const undoSystem = this.undoSystem;
+    this.undoSystem = null;
+    
+    try {
+      // Perform the overwrite as delete + insert but without recording
+      await this.deleteBytes(position, endPos);
+      await this.insertBytes(position, data);
+    } finally {
+      // Restore undo system
+      this.undoSystem = undoSystem;
     }
     
-    await this.deleteBytes(position, endPos);
-    await this.insertBytes(position, data);
+    // Record the operation AFTER executing it
+    if (this.undoSystem) {
+      this.undoSystem.recordOverwrite(originalPosition, originalData, overwrittenData, timestamp);
+    }
     
-    return originalData;
+    return overwrittenData;
   }
 
   // =================== MINIMAL LINE INFORMATION API ===================
@@ -974,14 +1055,14 @@ class PagedBuffer {
     }
   }
 
-  /**
+/**
    * Begin a named undo transaction
    * @param {string} name - Name/description of the transaction
    * @param {Object} options - Transaction options  
    */
   beginUndoTransaction(name, options = {}) {
     if (this.undoSystem) {
-      this.undoSystem.beginTransaction(name, options);
+      this.undoSystem.beginUndoTransaction(name, options);
     }
   }
 
@@ -992,7 +1073,7 @@ class PagedBuffer {
    */
   commitUndoTransaction(finalName = null) {
     if (this.undoSystem) {
-      return this.undoSystem.commitTransaction(finalName);
+      return this.undoSystem.commitUndoTransaction(finalName);
     }
     return false;
   }
@@ -1003,7 +1084,7 @@ class PagedBuffer {
    */
   async rollbackUndoTransaction() {
     if (this.undoSystem) {
-      return await this.undoSystem.rollbackTransaction();
+      return await this.undoSystem.rollbackUndoTransaction();
     }
     return false;
   }

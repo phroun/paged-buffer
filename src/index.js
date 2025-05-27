@@ -1,5 +1,16 @@
 /**
  * @fileoverview Paged Buffer System - Main Entry Point
+ * @description High-performance buffer system for handling arbitrarily large files
+ * with constant memory usage, intelligent undo/redo, and pluggable storage backends.
+ * 
+ * @example
+ * const { PagedBuffer } = require('paged-buffer-system');
+ * 
+ * const buffer = new PagedBuffer();
+ * buffer.enableUndo();
+ * await buffer.loadFile('large-file.txt');
+ * await buffer.insertBytes(100, Buffer.from('Hello'));
+ * 
  * @author Jeffrey R. Day
  * @version 0.1.0
  */

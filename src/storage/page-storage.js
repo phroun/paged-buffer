@@ -8,7 +8,7 @@ class PageStorage {
    * @param {Buffer} data - Page data
    * @returns {Promise<void>}
    */
-  async savePage(pageId, data) {
+  async savePage(_pageId, _data) {
     throw new Error('Must implement savePage');
   }
 
@@ -17,7 +17,7 @@ class PageStorage {
    * @param {string} pageId - Unique page identifier
    * @returns {Promise<Buffer>} - Page data
    */
-  async loadPage(pageId) {
+  async loadPage(_pageId) {
     throw new Error('Must implement loadPage');
   }
 
@@ -26,7 +26,7 @@ class PageStorage {
    * @param {string} pageId - Unique page identifier
    * @returns {Promise<void>}
    */
-  async deletePage(pageId) {
+  async deletePage(_pageId) {
     throw new Error('Must implement deletePage');
   }
 
@@ -35,7 +35,7 @@ class PageStorage {
    * @param {string} pageId - Unique page identifier
    * @returns {Promise<boolean>}
    */
-  async pageExists(pageId) {
+  async pageExists(_pageId) {
     throw new Error('Must implement pageExists');
   }
 }

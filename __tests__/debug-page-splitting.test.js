@@ -67,8 +67,8 @@ describe('Debug Page Splitting Issues', () => {
       const stats = buffer.undoSystem.getStats();
       console.log('Undo stats:', stats);
       
-      if (buffer.undoSystem.currentGroup) {
-        console.log('Current group operations:', buffer.undoSystem.currentGroup.operations.length);
+      if (buffer.undoSystem.undoStack) {
+        console.log('Current stack:', buffer.undoSystem.undoStack.length);
       }
     }
     

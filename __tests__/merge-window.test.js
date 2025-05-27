@@ -1,6 +1,6 @@
 /**
  * Corrected merge window tests with proper string expectations
- * Also includes a workaround for the null pointer bug
+ * Updated for new undo system architecture
  */
 
 const { PagedBuffer } = require('../src/paged-buffer');
@@ -136,14 +136,36 @@ describe('PagedBuffer - Merge Window Behavior (Corrected)', () => {
       });
     });
 
-    test('should merge insertions with 1 character gap when window = 1', async () => {
+    test('should merge insertions with 1 character gap when window = 1 - STACK DEBUG', async () => {
+      buffer.undoSystem.configure({
+        mergeTimeWindow: 10000,
+        mergePositionWindow: 1  // Allow distance 0 and 1 to merge
+      });
+      
+      // Start: "Initial content"
+      const initial = await buffer.getBytes(0, buffer.getTotalSize());
+      expect(initial.toString()).toBe('Initial content');
+      expect(buffer.getMemoryStats().undo.undoGroups).toBe(0); // No operations yet
+      
+      // First operation
       await buffer.insertBytes(0, Buffer.from('A'));     // "AInitial content"
+      const afterA = await buffer.getBytes(0, buffer.getTotalSize());
+      expect(afterA.toString()).toBe('AInitial content');
+      expect(buffer.getMemoryStats().undo.undoGroups).toBe(1); // Should have 1 group
+      
+      // Second operation - this should merge with first if distance ≤ 1
       await buffer.insertBytes(2, Buffer.from('B'));     // "AIBnitial content"
+      const afterB = await buffer.getBytes(0, buffer.getTotalSize());
+      expect(afterB.toString()).toBe('AIBnitial content');
       
-      const content = await buffer.getBytes(0, buffer.getTotalSize());
-      expect(content.toString()).toBe('AIBnitial content'); // CORRECTED
+      // KEY TEST: Check if operations merged
+      const stats = buffer.getMemoryStats().undo;
+      expect(stats.undoGroups).toBe(1); // Should still be 1 if they merged, 2 if they didn't
       
-      // Should require only ONE undo if operations merged
+      // If the above expect passes, operations merged correctly
+      // If it fails, operations didn't merge when they should have
+      
+      // Only proceed with undo test if merge worked
       const undo1 = await buffer.undo();
       expect(undo1).toBe(true);
       
@@ -151,7 +173,7 @@ describe('PagedBuffer - Merge Window Behavior (Corrected)', () => {
       expect(afterUndo.toString()).toBe('Initial content'); // Both operations undone
       
       const undo2 = await buffer.undo();
-      expect(undo2).toBe(false);
+      expect(undo2).toBe(false); // Should be no more undos
     });
 
     test('should NOT merge insertions with 2 character gap when window = 1', async () => {
@@ -185,28 +207,37 @@ describe('PagedBuffer - Merge Window Behavior (Corrected)', () => {
     });
 
     test('should handle typing then backspacing correctly', async () => {
-      // Type "Hello" (should merge into one group)
+      // Set up mock clock to control timing
+      let currentTime = 1000;
+      const mockClock = () => currentTime;
+      buffer.undoSystem.setClock(mockClock);
+
+      // Type "Hello" (should merge into one group due to rapid timing)
       await buffer.insertBytes(0, Buffer.from('H'));
       await buffer.insertBytes(1, Buffer.from('e')); 
       await buffer.insertBytes(2, Buffer.from('l'));
       await buffer.insertBytes(3, Buffer.from('l'));
       await buffer.insertBytes(4, Buffer.from('o'));
       
-      // Now backspace two characters (should merge into second group)
-      await buffer.deleteBytes(4, 5); // Delete 'o'
-      await buffer.deleteBytes(3, 4); // Delete 'l' 
+      // CRITICAL: Advance time beyond merge window to force group separation
+      currentTime += 15000; // Beyond the merge window
+      
+      // Now backspace two characters (should be a separate group due to time gap)
+      // FIXED: Correct positions for backspacing - positions don't shift when deleting backwards
+      await buffer.deleteBytes(4, 5); // Delete 'o' → "HellInitial content"
+      await buffer.deleteBytes(3, 4); // Delete 'l' → "HelInitial content"
       
       const content = await buffer.getBytes(0, buffer.getTotalSize());
       expect(content.toString()).toBe('HelInitial content');
       
-      // Undo backspacing (second group)
+      // Undo backspacing (second group) - should restore "ll" → "Hello"
       const undo1 = await buffer.undo();
       expect(undo1).toBe(true);
       
       const afterUndo1 = await buffer.getBytes(0, buffer.getTotalSize());
-      expect(afterUndo1.toString()).toBe('HelloInitial content'); // CORRECTED
+      expect(afterUndo1.toString()).toBe('HelloInitial content');
       
-      // Undo typing (first group)  
+      // Undo typing (first group) - should remove "Hello"
       const undo2 = await buffer.undo();
       expect(undo2).toBe(true);
       
@@ -298,79 +329,34 @@ describe('PagedBuffer - Simple Merge Verification', () => {
   });
 });
 
-// Add this as a new describe block at the end of merge-window.test.js, 
-// right before the final closing of the file:
-
-describe('DEBUG: Complex Operation Merging Issues', () => {
-  let buffer;
-
-  beforeEach(() => {
-    buffer = new PagedBuffer(64);
-    buffer.enableUndo({
-      mergeTimeWindow: 10000,
-      mergePositionWindow: 0  // Zero distance window
-    });
-    buffer.loadContent('Base content for consistency test');
+test('DEBUG: Verify new undo system architecture', async () => {
+  const buffer = new PagedBuffer(64);
+  buffer.enableUndo({
+    mergeTimeWindow: 10000,
+    mergePositionWindow: 0
   });
+  buffer.loadContent('Initial content');
 
-  test('DEBUG: Why are non-adjacent operations merging?', async () => {
-    console.log('=== Testing individual operation merging ===');
-    
-    // Test the exact same operations but examine merge decisions
-    
-    // Step 1: Insert " NEW" at position 4
-    console.log('\n--- Step 1: Insert " NEW" at pos 4 ---');
-    await buffer.insertBytes(4, Buffer.from(' NEW'));
-    console.log('After step 1 - currentGroupOps:', buffer.undoSystem.currentGroup?.operations.length);
-    
-    // Step 2: Insert "Modified " at position 0 - should NOT merge (different position)
-    console.log('\n--- Step 2: Insert "Modified " at pos 0 ---');
-    console.log('Before step 2 - about to test merge with pos 4 → pos 0');
-    
-    // Let's manually test the merge logic
-    if (buffer.undoSystem.currentGroup?.operations.length > 0) {
-      const lastOp = buffer.undoSystem.currentGroup.operations[buffer.undoSystem.currentGroup.operations.length - 1];
-      console.log('Last operation:', { type: lastOp.type, position: lastOp.position, dataLength: lastOp.data?.length });
-      
-      // Create the new operation to test merging
-      const { BufferOperation, OperationType } = require('../src/undo-system');
-      const newOp = new BufferOperation(OperationType.INSERT, 0, Buffer.from('Modified '), null, Date.now());
-      console.log('New operation:', { type: newOp.type, position: newOp.position, dataLength: newOp.data?.length });
-      
-      // Test the merge decision
-      const canMerge = lastOp.canMergeWith(newOp, 10000, 0);
-      console.log('Can merge (should be false):', canMerge);
-      
-      if (canMerge) {
-        const distance = lastOp.getLogicalDistance(newOp);
-        console.log('Logical distance:', distance);
-        console.log('Time difference:', Math.abs(lastOp.timestamp - newOp.timestamp));
-      }
-    }
-    
-    await buffer.insertBytes(0, Buffer.from('Modified '));
-    console.log('After step 2 - currentGroupOps:', buffer.undoSystem.currentGroup?.operations.length);
-    
-    // If they merged when they shouldn't have, we have our bug
-    if (buffer.undoSystem.currentGroup?.operations.length === 1) {
-      console.log('ERROR: Operations merged when they should not have (positions 4 and 0 with window 0)');
-      
-      // Let's examine the merged operation
-      const mergedOp = buffer.undoSystem.currentGroup.operations[0];
-      console.log('Merged operation details:', {
-        type: mergedOp.type,
-        position: mergedOp.position,
-        dataLength: mergedOp.data?.length,
-        originalDataLength: mergedOp.originalData?.length
-      });
-    } else {
-      console.log('SUCCESS: Operations correctly did not merge');
-    }
-    
-    // Quick verification
-    const content = await buffer.getBytes(0, buffer.getTotalSize());
-    console.log('Current content:', `"${content.toString()}"`);
-    
-    expect(true).toBe(true); // Just to make the test pass while we debug
-  });
+  console.log('=== Testing new undo system architecture ===');
+  
+  // Step 1: Insert " NEW" at position 4
+  console.log('\n--- Step 1: Insert " NEW" at pos 4 ---');
+  await buffer.insertBytes(4, Buffer.from(' NEW'));
+  console.log('After step 1 - undoStackSize:', buffer.undoSystem.undoStack.length);
+  
+  // Step 2: Insert "Modified " at position 0 - should NOT merge (different position)
+  console.log('\n--- Step 2: Insert "Modified " at pos 0 ---');
+  console.log('Before step 2 - about to test merge with pos 4 → pos 0');
+  
+  await buffer.insertBytes(0, Buffer.from('Modified '));
+  console.log('After step 2 - undoStackSize:', buffer.undoSystem.undoStack.length);
+  
+  const content = await buffer.getBytes(0, buffer.getTotalSize());
+  console.log('Current content:', `"${content.toString()}"`);
+  
+  // Verify that operations are properly on the undo stack
+  expect(buffer.undoSystem.undoStack.length).toBeGreaterThan(0);
+  expect(buffer.canUndo()).toBe(true);
+  
+  console.log('=== Architecture verification complete ===');
 });
