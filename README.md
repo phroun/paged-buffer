@@ -1,7 +1,7 @@
 # @phroun/paged-buffer
 
 [![npm version](https://badge.fury.io/js/%40phroun%2Fpaged-buffer.svg)](https://badge.fury.io/js/%40phroun%2Fpaged-buffer)
-[![Build Status](https://github.com/phroun/paged-buffer/workflows/CI/badge.svg)](https://github.com/phroun/paged-buffer/actions)
+[![Build Status](https://github.com/phroun/paged-buffer/actions/workflows/node.js.yml/badge.svg)](https://github.com/phroun/paged-buffer/actions/workflows/node.js.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 A high-performance, byte-level buffer system for editing massive files with intelligent memory management and undo/redo capabilities.

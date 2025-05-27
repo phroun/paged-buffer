@@ -1,7 +1,7 @@
 {
   "name": "@phroun/paged-buffer",
-  "version": "0.1.0",
-  "description": "High-performance buffer system for editing massive files with intelligent memory management, marks, and undo/redo capabilities",
+  "version": "0.1.1",
+  "description": "High-performance buffer system for editing massive files with intelligent memory management and undo/redo capabilities",
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
   "files": [
