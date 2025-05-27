@@ -5,7 +5,6 @@
  */
 
 const { PagedBuffer } = require('./paged-buffer');
-const { BufferManager } = require('./buffer-manager');
 const { BufferUndoSystem, BufferOperation, OperationGroup, OperationType } = require('./undo-system');
 const { PageStorage } = require('./storage/page-storage');
 const { FilePageStorage } = require('./storage/file-page-storage');
@@ -24,7 +23,6 @@ const {
 module.exports = {
   // Core classes
   PagedBuffer,
-  BufferManager,
   BufferUndoSystem,
   
   // Storage implementations

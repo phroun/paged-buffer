@@ -123,39 +123,46 @@ class PagedBuffer {
    * @param {string} [mode] - Force specific mode, or auto-detect
    */
   async loadFile(filename, mode = null) {
-    const stats = await fs.stat(filename);
-    this.filename = filename;
-    this.fileSize = stats.size;
-    this.fileMtime = stats.mtime;
-    this.totalSize = stats.size;
-    this.lastFileCheck = Date.now();
-    
-    // Detect or set buffer mode
-    if (mode) {
-      this.mode = mode;
-    } else {
-      const fd = await fs.open(filename, 'r');
-      const sampleBuffer = Buffer.alloc(Math.min(8192, stats.size));
-      await fd.read(sampleBuffer, 0, sampleBuffer.length, 0);
-      await fd.close();
+    try {
+      const stats = await fs.stat(filename);
+      this.filename = filename;
+      this.fileSize = stats.size;
+      this.fileMtime = stats.mtime;
+      this.totalSize = stats.size;
+      this.lastFileCheck = Date.now();
       
-      this.mode = this._detectMode(sampleBuffer);
+      // Detect or set buffer mode
+      if (mode) {
+        this.mode = mode;
+      } else if (stats.size > 0) {
+        const fd = await fs.open(filename, 'r');
+        const sampleBuffer = Buffer.alloc(Math.min(8192, stats.size));
+        await fd.read(sampleBuffer, 0, sampleBuffer.length, 0);
+        await fd.close();
+        
+        this.mode = this._detectMode(sampleBuffer);
+      } else {
+        // Empty file defaults to UTF8
+        this.mode = BufferMode.UTF8;
+      }
+      
+      this._notify(
+        NotificationType.FILE_MODIFIED_ON_DISK,
+        'info',
+        `Loaded file in ${this.mode} mode`,
+        { filename, mode: this.mode, size: stats.size }
+      );
+      
+      // Calculate file checksum
+      this.fileChecksum = await this._calculateFileChecksum(filename);
+      
+      // Create page structure
+      await this._createPageStructure(filename);
+      
+      this.state = BufferState.CLEAN;
+    } catch (error) {
+      throw new Error(`Failed to load file: ${error.message}`);
     }
-    
-    this._notify(
-      NotificationType.FILE_MODIFIED_ON_DISK,
-      'info',
-      `Loaded file in ${this.mode} mode`,
-      { filename, mode: this.mode, size: stats.size }
-    );
-    
-    // Calculate file checksum
-    this.fileChecksum = await this._calculateFileChecksum(filename);
-    
-    // Create page structure
-    await this._createPageStructure(filename);
-    
-    this.state = BufferState.CLEAN;
   }
 
   /**
@@ -163,25 +170,55 @@ class PagedBuffer {
    * @param {string} content - Text content
    */
   loadContent(content) {
-    this.lines = content.split(/\r?\n/);
-    this.originalLines = [...this.lines];
     this.filename = null;
     this.totalSize = Buffer.byteLength(content, 'utf8');
     this.mode = BufferMode.UTF8;
     this.state = BufferState.CLEAN;
     
-    // Create single page for content
+    // Clear existing pages AND page order
     this.pages.clear();
     this.pageOrder = [];
     this.nextPageId = 0;
     
-    const pageId = `page_${this.nextPageId++}`;
+    // Create pages just like file loading - split content into page-sized chunks
     const contentBuffer = Buffer.from(content, 'utf8');
-    const checksum = PageInfo.calculateChecksum(contentBuffer);
-    const pageInfo = new PageInfo(pageId, 0, contentBuffer.length, checksum);
-    pageInfo.updateData(contentBuffer, this.mode);
+    let offset = 0;
     
-    this.pages.set(pageId, pageInfo);
+    while (offset < contentBuffer.length) {
+      const pageId = `page_${this.nextPageId++}`;
+      const chunkSize = Math.min(this.pageSize, contentBuffer.length - offset);
+      const chunk = contentBuffer.subarray(offset, offset + chunkSize);
+      
+      const checksum = PageInfo.calculateChecksum(chunk);
+      const pageInfo = new PageInfo(pageId, offset, chunkSize, checksum);
+      pageInfo.updateData(chunk, this.mode);
+      
+      this.pages.set(pageId, pageInfo);
+      // Add to page order since it's loaded
+      this.pageOrder.push(pageId);
+      
+      offset += chunkSize;
+    }
+    
+    // Handle empty content
+    if (contentBuffer.length === 0) {
+      const pageId = `page_${this.nextPageId++}`;
+      const pageInfo = new PageInfo(pageId, 0, 0);
+      pageInfo.updateData(Buffer.alloc(0), this.mode);
+      
+      this.pages.set(pageId, pageInfo);
+      this.pageOrder.push(pageId);
+    }
+    
+    // Trigger eviction after loading
+    this._evictPagesIfNeeded();
+    
+    this._notify(
+      'buffer_content_loaded',
+      'info',
+      `Loaded content in ${this.mode} mode (${this.pages.size} pages)`,
+      { mode: this.mode, size: this.totalSize, pages: this.pages.size }
+    );
   }
 
   /**
@@ -189,6 +226,11 @@ class PagedBuffer {
    * @param {string} filename - Source file
    */
   async _createPageStructure(filename) {
+    if (this.fileSize === 0) {
+      // Empty file - create empty page structure
+      return;
+    }
+
     const fd = await fs.open(filename, 'r');
     let offset = 0;
     
@@ -217,6 +259,10 @@ class PagedBuffer {
    * @returns {Promise<string>} - File checksum
    */
   async _calculateFileChecksum(filename) {
+    if (this.fileSize === 0) {
+      return 'd41d8cd98f00b204e9800998ecf8427e'; // MD5 of empty string
+    }
+
     const hash = crypto.createHash('md5');
     const fd = await fs.open(filename, 'r');
     const buffer = Buffer.alloc(8192);
@@ -237,11 +283,51 @@ class PagedBuffer {
   }
 
   /**
+   * Check for file changes
+   * @returns {Promise<Object>} - Change information
+   */
+  async checkFileChanges() {
+    if (!this.filename) {
+      return { changed: false };
+    }
+
+    try {
+      const stats = await fs.stat(this.filename);
+      const sizeChanged = stats.size !== this.fileSize;
+      const mtimeChanged = stats.mtime.getTime() !== this.fileMtime.getTime();
+      const changed = sizeChanged || mtimeChanged;
+
+      return {
+        changed,
+        sizeChanged,
+        mtimeChanged,
+        newSize: stats.size,
+        newMtime: stats.mtime,
+        deleted: false
+      };
+    } catch (error) {
+      if (error.code === 'ENOENT') {
+        return {
+          changed: true,
+          deleted: true,
+          sizeChanged: true,
+          mtimeChanged: true
+        };
+      }
+      throw error;
+    }
+  }
+
+  /**
    * Get page that contains the given absolute byte position
    * @param {number} absolutePos - Absolute byte position
    * @returns {Promise<{page: PageInfo, relativePos: number}>}
    */
   async _getPageForPosition(absolutePos) {
+    if (absolutePos < 0) {
+      throw new Error(`Invalid position: ${absolutePos}`);
+    }
+
     let currentPos = 0;
     
     for (const [pageId, pageInfo] of this.pages) {
@@ -254,6 +340,32 @@ class PagedBuffer {
       }
       currentPos += pageInfo.currentSize;
     }
+
+    // Allow insertion at the very end
+    if (absolutePos === this.totalSize) {
+      // Create or get the last page for end insertion
+      const pageIds = Array.from(this.pages.keys());
+      if (pageIds.length === 0) {
+        // No pages exist, create one
+        const pageId = `page_${this.nextPageId++}`;
+        const pageInfo = new PageInfo(pageId, 0, 0);
+        pageInfo.updateData(Buffer.alloc(0), this.mode);
+        this.pages.set(pageId, pageInfo);
+        return {
+          page: pageInfo,
+          relativePos: 0
+        };
+      } else {
+        // Use the last page
+        const lastPageId = pageIds[pageIds.length - 1];
+        const lastPage = this.pages.get(lastPageId);
+        await this._ensurePageLoaded(lastPage);
+        return {
+          page: lastPage,
+          relativePos: lastPage.currentSize
+        };
+      }
+    }
     
     throw new Error(`Position ${absolutePos} is beyond end of buffer`);
   }
@@ -264,7 +376,7 @@ class PagedBuffer {
    */
   async _ensurePageLoaded(pageInfo) {
     if (pageInfo.isLoaded) {
-      this._updatePageAccess(pageInfo);
+      await this._updatePageAccess(pageInfo);
       return;
     }
 
@@ -273,7 +385,7 @@ class PagedBuffer {
         pageInfo.data = await this.storage.loadPage(pageInfo.pageId);
       } else if (pageInfo.isDetached) {
         throw new Error(`Page ${pageInfo.pageId} is detached from source file`);
-      } else {
+      } else if (this.filename && pageInfo.originalSize > 0) {
         const fd = await fs.open(this.filename, 'r');
         try {
           const buffer = Buffer.alloc(pageInfo.originalSize);
@@ -292,13 +404,17 @@ class PagedBuffer {
         } finally {
           await fd.close();
         }
+      } else {
+        // Empty page or no file
+        pageInfo.data = Buffer.alloc(0);
       }
 
       pageInfo.isLoaded = true;
       pageInfo.lastAccess = Date.now();
       
-      this.pageOrder.push(pageInfo.pageId);
-      await this._evictPagesIfNeeded();
+      // Update access tracking and trigger eviction
+      await this._updatePageAccess(pageInfo);
+      
     } catch (error) {
       this._notify(
         NotificationType.STORAGE_ERROR,
@@ -314,39 +430,68 @@ class PagedBuffer {
    * Update page access for LRU tracking
    * @param {PageInfo} pageInfo - Page that was accessed
    */
-  _updatePageAccess(pageInfo) {
+  async _updatePageAccess(pageInfo) {
     pageInfo.lastAccess = Date.now();
     
+    // Remove existing entry if present (maintain uniqueness)
     const index = this.pageOrder.indexOf(pageInfo.pageId);
     if (index > -1) {
       this.pageOrder.splice(index, 1);
     }
+    
+    // Add to end (most recently used)
     this.pageOrder.push(pageInfo.pageId);
+    
+    // Trigger eviction check after every access
+    await this._evictPagesIfNeeded();
   }
 
   /**
    * Evict pages if over memory limit
    */
   async _evictPagesIfNeeded() {
-    while (this.pageOrder.length > this.maxMemoryPages) {
+    // Count currently loaded pages
+    let loadedCount = 0;
+    for (const pageInfo of this.pages.values()) {
+      if (pageInfo.isLoaded) {
+        loadedCount++;
+      }
+    }
+
+    // Evict oldest pages until we're under the limit
+    while (loadedCount > this.maxMemoryPages && this.pageOrder.length > 0) {
       const oldestPageId = this.pageOrder.shift();
       const pageInfo = this.pages.get(oldestPageId);
       
       if (pageInfo && pageInfo.isLoaded) {
         try {
+          // Save dirty pages before evicting
           if (pageInfo.isDirty) {
             await this.storage.savePage(pageInfo.pageId, pageInfo.data);
           }
           
+          // Actually unload the page
           pageInfo.data = null;
           pageInfo.isLoaded = false;
-        } catch (error) {
+          loadedCount--;
+          
           this._notify(
-            NotificationType.STORAGE_ERROR,
+            'page_evicted',
+            'debug',
+            `Evicted page ${pageInfo.pageId} due to memory pressure`,
+            { pageId: pageInfo.pageId, loadedPages: loadedCount }
+          );
+          
+        } catch (error) {
+          // Re-add to order if eviction failed
+          this.pageOrder.unshift(oldestPageId);
+          this._notify(
+            'page_eviction_failed',
             'error',
             `Failed to evict page ${pageInfo.pageId}: ${error.message}`,
             { pageId: pageInfo.pageId, error: error.message }
           );
+          break; // Stop trying to evict if we hit an error
         }
       }
     }
@@ -387,16 +532,34 @@ class PagedBuffer {
    * @returns {Promise<Buffer>} - Data
    */
   async getBytes(start, end) {
-    if (start >= end) return Buffer.alloc(0);
+    if (start < 0 || end < 0) {
+      throw new Error('Invalid range: positions cannot be negative');
+    }
+    if (start > end) {
+      return Buffer.alloc(0);
+    }
+    // FIXED: Return empty buffer for start positions beyond buffer size
+    if (start >= this.totalSize) {
+      return Buffer.alloc(0); // Don't throw, just return empty
+    }
+    if (end > this.totalSize) {
+      end = this.totalSize; // Clamp to buffer size instead of throwing
+    }
     
     const chunks = [];
     let currentPos = start;
     
     while (currentPos < end) {
       const { page, relativePos } = await this._getPageForPosition(currentPos);
+      
+      // CRITICAL FIX: Ensure page is loaded before accessing data
+      await this._ensurePageLoaded(page);
+      
       const endInPage = Math.min(relativePos + (end - currentPos), page.currentSize);
       
-      chunks.push(page.data.subarray(relativePos, endInPage));
+      if (endInPage > relativePos) {
+        chunks.push(page.data.subarray(relativePos, endInPage));
+      }
       currentPos += (endInPage - relativePos);
     }
     
@@ -409,6 +572,14 @@ class PagedBuffer {
    * @param {Buffer} data - Data to insert
    */
   async insertBytes(position, data) {
+    if (position < 0) {
+      throw new Error('Invalid position: cannot be negative');
+    }
+    // FIXED: Allow insertion at any position <= totalSize (not just < totalSize)
+    if (position > this.totalSize) {
+      throw new Error(`Position ${position} is beyond end of buffer (size: ${this.totalSize})`);
+    }
+
     if (this.undoSystem) {
       this.undoSystem.recordInsert(position, data);
     }
@@ -434,6 +605,19 @@ class PagedBuffer {
    * @returns {Promise<Buffer>} - Deleted data
    */
   async deleteBytes(start, end) {
+    if (start < 0 || end < 0) {
+      throw new Error('Invalid range: positions cannot be negative');  
+    }
+    if (start > end) {
+      throw new Error('Invalid range: start position must be less than or equal to end position');
+    }
+    if (start >= this.totalSize) {
+      return Buffer.alloc(0); // Nothing to delete beyond buffer
+    }
+    if (end > this.totalSize) {
+      end = this.totalSize; // Clamp to buffer size
+    }
+
     const deletedData = await this.getBytes(start, end);
     
     if (this.undoSystem) {
@@ -460,13 +644,21 @@ class PagedBuffer {
    * @returns {Promise<Buffer>} - Original data that was overwritten
    */
   async overwriteBytes(position, data) {
-    const originalData = await this.getBytes(position, position + data.length);
+    if (position < 0) {
+      throw new Error('Invalid position: cannot be negative');
+    }
+    if (position >= this.totalSize) {
+      throw new Error(`Position ${position} is beyond end of buffer (size: ${this.totalSize})`);
+    }
+
+    const endPos = Math.min(position + data.length, this.totalSize);
+    const originalData = await this.getBytes(position, endPos);
     
     if (this.undoSystem) {
       this.undoSystem.recordOverwrite(position, data, originalData);
     }
     
-    await this.deleteBytes(position, position + originalData.length);
+    await this.deleteBytes(position, endPos);
     await this.insertBytes(position, data);
     
     return originalData;
@@ -483,8 +675,13 @@ class PagedBuffer {
       return [0];
     }
 
-    const lineStarts = [0];
+    const lineStarts = [0]; // Always start with position 0 (first line)
     const totalSize = this.getTotalSize();
+    
+    if (totalSize === 0) {
+      return lineStarts;
+    }
+
     const chunkSize = 64 * 1024;
 
     for (let pos = 0; pos < totalSize; pos += chunkSize) {
@@ -492,8 +689,11 @@ class PagedBuffer {
       const chunk = await this.getBytes(pos, endPos);
       
       for (let i = 0; i < chunk.length; i++) {
-        if (chunk[i] === 0x0A) {
-          lineStarts.push(pos + i + 1);
+        if (chunk[i] === 0x0A) { // Found newline character
+          const nextLineStart = pos + i + 1;
+          // CRITICAL FIX: Always add line start after newline, even if it's at EOF
+          // This ensures empty lines (including final empty line) are counted
+          lineStarts.push(nextLineStart);
         }
       }
     }
@@ -507,6 +707,8 @@ class PagedBuffer {
    */
   async getLineCount() {
     const lineStarts = await this.getLineStarts();
+    // Line count equals the number of line starts
+    // This correctly counts empty lines, including final empty line after last \n
     return lineStarts.length;
   }
 
@@ -525,7 +727,9 @@ class PagedBuffer {
       lineStarts = await this.getLineStarts();
     }
 
+    // CRITICAL FIX: Handle line beyond available lines
     if (line >= lineStarts.length) {
+      // Return end of buffer for lines beyond what exists
       return this.getTotalSize();
     }
 
@@ -535,9 +739,21 @@ class PagedBuffer {
       return lineStartByte;
     }
 
-    const lineEndByte = line + 1 < lineStarts.length ? 
-      lineStarts[line + 1] - 1 :
-      this.getTotalSize();
+    // CRITICAL FIX: Calculate line end properly, considering final empty line
+    let lineEndByte;
+    if (line + 1 < lineStarts.length) {
+      // Not the last line - end is one byte before next line start (before the \n)
+      lineEndByte = lineStarts[line + 1] - 1;
+    } else {
+      // This is the last line - end is buffer end
+      lineEndByte = this.getTotalSize();
+    }
+
+    // Handle empty lines correctly
+    if (lineStartByte >= lineEndByte) {
+      // This is an empty line (like final empty line after last \n)
+      return lineStartByte;
+    }
 
     const lineBytes = await this.getBytes(lineStartByte, lineEndByte);
     const lineText = lineBytes.toString('utf8');
@@ -565,6 +781,7 @@ class PagedBuffer {
       lineStarts = await this.getLineStarts();
     }
 
+    // Binary search to find the correct line
     let left = 0;
     let right = lineStarts.length - 1;
     
@@ -585,10 +802,25 @@ class PagedBuffer {
       return {line, character: 0};
     }
 
-    const lineEndByte = line + 1 < lineStarts.length ? 
-      lineStarts[line + 1] - 1 :
-      this.getTotalSize();
+    // CRITICAL FIX: Calculate line end properly for character conversion
+    let lineEndByte;
+    if (line + 1 < lineStarts.length) {
+      // Not the last line - end is one byte before next line start (excludes \n)
+      lineEndByte = lineStarts[line + 1] - 1;
+    } else {
+      // This is the last line - end is buffer end
+      lineEndByte = this.getTotalSize();
+    }
 
+    // Handle case where bytePos is exactly at or beyond line end
+    if (bytePos >= lineEndByte) {
+      // Position is at end of line (at the \n or beyond)
+      const lineBytes = await this.getBytes(lineStartByte, lineEndByte);
+      const lineText = lineBytes.toString('utf8');
+      return {line, character: lineText.length};
+    }
+
+    // Normal case - position is within the line content
     const lineBytes = await this.getBytes(lineStartByte, Math.min(lineStartByte + byteOffsetInLine, lineEndByte));
     const partialText = lineBytes.toString('utf8');
     
@@ -662,7 +894,9 @@ class PagedBuffer {
     try {
       for (const [pageId, pageInfo] of this.pages) {
         await this._ensurePageLoaded(pageInfo);
-        await fd.write(pageInfo.data);
+        if (pageInfo.data && pageInfo.data.length > 0) {
+          await fd.write(pageInfo.data);
+        }
       }
     } finally {
       await fd.close();
@@ -700,14 +934,25 @@ class PagedBuffer {
       }
     }
     
-    await this.saveFile(filename);
+    // Temporarily change state to allow saving
+    const originalState = this.state;
+    this.state = BufferState.MODIFIED;
+    
+    try {
+      await this.saveFile(filename);
+    } finally {
+      // Restore original state if save failed
+      if (this.state !== BufferState.CLEAN) {
+        this.state = originalState;
+      }
+    }
   }
 
   // =================== UNDO/REDO SYSTEM ===================
 
   /**
    * Enable undo/redo functionality
-   * @param {Object} config - Undo system configuration
+   * @param {Object} config - Undo system configuration  
    */
   enableUndo(config = {}) {
     if (!this.undoSystem) {
@@ -732,7 +977,7 @@ class PagedBuffer {
   /**
    * Begin a named undo transaction
    * @param {string} name - Name/description of the transaction
-   * @param {Object} options - Transaction options
+   * @param {Object} options - Transaction options  
    */
   beginUndoTransaction(name, options = {}) {
     if (this.undoSystem) {

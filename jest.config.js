@@ -54,9 +54,6 @@ module.exports = {
   // Transform configuration (if needed for ES modules)
   transform: {},
   
-  // Test timeout (increased for large file tests)
-  testTimeout: 30000,
-  
   // Verbose output
   verbose: false,
   
@@ -100,15 +97,13 @@ module.exports = {
       displayName: 'unit',
       testMatch: [
         '<rootDir>/__tests__/*.test.js'
-      ],
-      testTimeout: 10000
+      ]
     },
     {
       displayName: 'integration', 
       testMatch: [
         '<rootDir>/__tests__/integration/*.test.js'
       ],
-      testTimeout: 60000,
       slowTestThreshold: 30
     }
   ]

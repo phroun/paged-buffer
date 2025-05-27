@@ -41,7 +41,7 @@ class TestUtils {
     // Remove temporary directory
     if (this.tempDir) {
       try {
-        await fs.rmdir(this.tempDir, { recursive: true });
+        await fs.rm(this.tempDir, { recursive: true });
       } catch (error) {
         // Ignore errors
       }
@@ -51,7 +51,7 @@ class TestUtils {
 
   /**
    * Create a temporary file with content
-   * @param {string} content - File content
+   * @param {string|Buffer} content - File content
    * @param {string} suffix - File suffix (e.g., '.txt')
    * @returns {string} - File path
    */
@@ -321,6 +321,23 @@ class TestUtils {
     await fs.writeFile(filePath, newContent);
     return newContent;
   }
+
+  // Direct filesystem methods (to replace testUtils.xxx calls)
+  async readFile(filePath, encoding = null) {
+    return await fs.readFile(filePath, encoding);
+  }
+
+  async writeFile(filePath, content) {
+    return await fs.writeFile(filePath, content);
+  }
+
+  async unlink(filePath) {
+    return await fs.unlink(filePath);
+  }
+
+  async chmod(filePath, mode) {
+    return await fs.chmod(filePath, mode);
+  }
 }
 
 // Global test utilities instance
@@ -334,7 +351,23 @@ beforeEach(async () => {
 afterEach(async () => {
   // Wait for any pending operations to complete
   await new Promise(resolve => setTimeout(resolve, 100));
-  
+
+  // Clear any active timers (more comprehensive approach)
+  if (typeof global !== 'undefined') {
+    // Look for any objects that might have undo systems with timers
+    Object.getOwnPropertyNames(global).forEach(key => {
+      try {
+        const obj = global[key];
+        if (obj && typeof obj === 'object' && obj.undoSystem?.autoCloseTimer) {
+          clearTimeout(obj.undoSystem.autoCloseTimer);
+          obj.undoSystem.autoCloseTimer = null;
+        }
+      } catch (error) {
+        // Ignore errors during cleanup
+      }
+    });
+  }
+ 
   await testUtils.cleanup();
 });
 
