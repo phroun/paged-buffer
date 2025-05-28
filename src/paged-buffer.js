@@ -1175,6 +1175,7 @@ class PagedBuffer {
    * Save the buffer using safe conflict-aware strategies
    * @param {string} [filename] - Filename to save to (defaults to current filename)
    * @param {Object} options - Save options
+   * @param {boolean} options.forcePartialSave - Allow saving partial data when source is corrupted
    */
   async saveFile(filename = this.filename, options = {}) {
     if (!filename) {
@@ -1198,16 +1199,46 @@ class PagedBuffer {
   /**
    * Save to a new filename (save-as operation)
    * @param {string} filename - New filename
-   * @param {Object} options - Save options
+   * @param {boolean|Object} forcePartialOrOptions - Force partial save (legacy) or options object
+   * @param {Object} options - Save options (if first param is boolean)
    */
-  async saveAs(filename, options = {}) {
+  async saveAs(filename, forcePartialOrOptions = {}, options = {}) {
     if (!filename) {
       throw new Error('Filename required for saveAs operation');
     }
 
+    // Handle legacy signature: saveAs(filename, forcePartial, options)
+    let forcePartial = false;
+    let saveOptions = {};
+    
+    if (typeof forcePartialOrOptions === 'boolean') {
+      forcePartial = forcePartialOrOptions;
+      saveOptions = { ...options };
+    } else {
+      saveOptions = { ...forcePartialOrOptions };
+      forcePartial = saveOptions.forcePartial || false;
+    }
+
+    // Check for detached buffer state - only enforce if forcePartial is false
+    if (this.state === BufferState.DETACHED && !forcePartial) {
+      const missingPages = [];
+      for (const [pageId, pageInfo] of this.pages) {
+        if (!pageInfo.isLoaded && !pageInfo.isDirty) {
+          missingPages.push(pageId);
+        }
+      }
+      
+      if (missingPages.length > 0) {
+        throw new Error(`Cannot save detached buffer - missing pages: ${missingPages.join(', ')}`);
+      }
+    }
+
+    // Configure save options based on forcePartial flag
+    saveOptions.allowPartialSave = forcePartial;
+
     // Save-as operations are always safe (no in-place conflicts)
-    const writer = new SafeFileWriter(this, options);
-    await writer.save(filename, options);
+    const writer = new SafeFileWriter(this, saveOptions);
+    await writer.save(filename, saveOptions);
     
     // Ensure state is updated after successful save
     // This is a safety check in case the SafeFileWriter didn't update it
@@ -1310,6 +1341,6 @@ class PagedBuffer {
       pageInfo.isDetached = false;
     }
   }
-}
 
+}
 module.exports = { PagedBuffer };

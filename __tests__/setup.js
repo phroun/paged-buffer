@@ -338,6 +338,39 @@ class TestUtils {
   async chmod(filePath, mode) {
     return await fs.chmod(filePath, mode);
   }
+
+  /**
+   * Get a temporary file path without creating the file (for saveAs tests)
+   * @param {string} suffix - File suffix (e.g., '.txt')  
+   * @returns {string} - File path where a file could be created
+   */
+  getTempFilePath(suffix = '.txt') {
+    if (!this.tempDir) {
+      throw new Error('Temp directory not set up. Call setupTempDir() first.');
+    }
+
+    const fileName = `test-${Date.now()}-${Math.random().toString(36).substr(2, 9)}${suffix}`;
+    const filePath = path.join(this.tempDir, fileName);
+    
+    // Add to tracking so it gets cleaned up
+    this.tempFiles.push(filePath);
+    
+    return filePath;
+  }
+
+  /**
+   * Check if a file exists
+   * @param {string} filePath - Path to check
+   * @returns {Promise<boolean>} - True if file exists
+   */
+  async fileExists(filePath) {
+    try {
+      await fs.access(filePath);
+      return true;
+    } catch {
+      return false;
+    }
+  }
 }
 
 // Global test utilities instance

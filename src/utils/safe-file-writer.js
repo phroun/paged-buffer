@@ -54,9 +54,13 @@ class ModificationAnalyzer {
         strategy: SaveStrategy.NEW_FILE,
         riskLevel: RiskLevel.NONE,
         isNewFile: true,
+        requiresCorruptionCheck: false,
         stats: this._calculateStats(modifications, [])
       };
     }
+
+    // Check for potential corruption issues for original file saves
+    const requiresCorruptionCheck = this._requiresCorruptionCheck();
 
     // In-place operation - analyze for conflicts
     const conflicts = this._detectConflicts(modifications);
@@ -69,8 +73,23 @@ class ModificationAnalyzer {
       strategy,
       riskLevel,
       isNewFile: false,
+      requiresCorruptionCheck,
       stats: this._calculateStats(modifications, conflicts)
     };
+  }
+
+  /**
+   * Check if we need to verify source file corruption
+   * @private
+   */
+  _requiresCorruptionCheck() {
+    // Need corruption check if we have any unmodified pages with original content
+    for (const [pageId, pageInfo] of this.buffer.pages) {
+      if (!pageInfo.isDirty && pageInfo.originalSize > 0) {
+        return true;
+      }
+    }
+    return false;
   }
 
   /**
@@ -302,6 +321,34 @@ class SafeFileWriter {
 
     const saveOptions = { ...this.options, ...options };
     
+    // CRITICAL: Check for source corruption BEFORE executing any strategy
+    if (analysis.requiresCorruptionCheck && !analysis.isNewFile) {
+      const corruptionIssues = await this._detectDataCorruption(saveOptions);
+      
+      if (corruptionIssues.length > 0 && !saveOptions.forcePartialSave) {
+        const issueDetails = corruptionIssues.map(issue => 
+          `${issue.pageId}: ${issue.error}`
+        ).join('; ');
+        
+        this._notify('partial_data_detected', 'error', 
+          `Cannot save to original file path - source data corruption detected. ` +
+          `Use saveAs() to save to a different location, or pass forcePartialSave=true to override.`,
+          { 
+            filename,
+            isOriginalFile: true,
+            corruptionIssues,
+            recommendation: 'Use saveAs() to save incomplete data to a new file'
+          }
+        );
+        
+        throw new Error(
+          `Refusing to save to original file path with partial data. ` +
+          `Source corruption detected: ${issueDetails}. ` +
+          `Use saveAs() to save to a different location.`
+        );
+      }
+    }
+    
     try {
       switch (analysis.strategy) {
         case SaveStrategy.NEW_FILE:
@@ -337,7 +384,7 @@ class SafeFileWriter {
    */
   async _saveNewFile(filename, analysis, options) {
     try {
-      await this._performStandardSave(filename);
+      await this._performStandardSave(filename, { ...options, isNewFile: true });
       await this._updateBufferMetadata(filename);
       
       this._notify('save_completed', 'info', 
@@ -358,7 +405,8 @@ class SafeFileWriter {
     const backup = await this._createBackup(filename, options);
     
     try {
-      await this._performStandardSave(filename);
+      await this._performStandardSave(filename, { ...options, isNewFile: false });
+      await this._updateBufferMetadata(filename);
       await this._cleanupBackup(backup);
       
       this._notify('save_completed', 'info', 
@@ -485,10 +533,10 @@ class SafeFileWriter {
   }
 
   /**
-   * Perform standard sequential save
+   * Perform standard sequential save (corruption already checked)
    * @private
    */
-  async _performStandardSave(filename) {
+  async _performStandardSave(filename, options = {}) {
     const fd = await fs.open(filename, 'w');
     
     try {
@@ -496,11 +544,30 @@ class SafeFileWriter {
         let pageData = null;
         
         if (pageInfo.isDirty) {
+          // Use modified data
           await this.buffer._ensurePageLoaded(pageInfo, false);
           pageData = pageInfo.data;
         } else if (pageInfo.originalSize > 0) {
-          // Read from original file
-          pageData = await this._readPageFromSource(pageInfo);
+          // Try to read from original file
+          try {
+            pageData = await this._readPageFromSource(pageInfo);
+          } catch (error) {
+            // Handle detached/corrupted source
+            if (!pageInfo.isDetached) {
+              pageInfo.isDetached = true;
+            }
+            
+            if (pageInfo.isLoaded && pageInfo.data) {
+              pageData = pageInfo.data;
+              this._notify('detached_page_used', 'warning', 
+                `Using cached data for corrupted page ${pageId}: ${error.message}`);
+            } else {
+              // Skip missing pages - corruption check already passed or was overridden
+              this._notify('page_skipped', 'warning', 
+                `Skipping corrupted page ${pageId}: ${error.message}`);
+              pageData = null;
+            }
+          }
         }
         
         if (pageData && pageData.length > 0) {
@@ -510,6 +577,53 @@ class SafeFileWriter {
     } finally {
       await fd.close();
     }
+  }
+
+  /**
+   * Detect data corruption issues before attempting save
+   * @private
+   */
+  async _detectDataCorruption(options = {}) {
+    const issues = [];
+    
+    // Debug logging
+    if (process.env.NODE_ENV === 'test') {
+      console.log('Detecting corruption for buffer with source:', this.buffer.filename);
+      console.log('Pages:', Array.from(this.buffer.pages.keys()));
+    }
+    
+    for (const [pageId, pageInfo] of this.buffer.pages) {
+      // Skip pages that are dirty (they have current data) or empty
+      if (pageInfo.isDirty || pageInfo.originalSize === 0) {
+        if (process.env.NODE_ENV === 'test') {
+          console.log(`Skipping page ${pageId}: dirty=${pageInfo.isDirty}, originalSize=${pageInfo.originalSize}`);
+        }
+        continue;
+      }
+      
+      // Check if we can read the original data
+      try {
+        await this._readPageFromSource(pageInfo);
+        if (process.env.NODE_ENV === 'test') {
+          console.log(`Page ${pageId}: source read successful`);
+        }
+      } catch (error) {
+        if (process.env.NODE_ENV === 'test') {
+          console.log(`Page ${pageId}: source read failed - ${error.message}`);
+        }
+        issues.push({
+          pageId,
+          error: error.message,
+          hasBackupData: pageInfo.isLoaded && pageInfo.data !== null
+        });
+      }
+    }
+    
+    if (process.env.NODE_ENV === 'test') {
+      console.log(`Corruption detection found ${issues.length} issues:`, issues);
+    }
+    
+    return issues;
   }
 
   /**
@@ -552,12 +666,25 @@ class SafeFileWriter {
       return Buffer.alloc(0);
     }
     
+    // Check if source file still exists and is accessible
+    try {
+      await fs.access(this.buffer.filename, fs.constants.R_OK);
+    } catch (error) {
+      // Source file is not accessible - this is a detached buffer scenario
+      throw new Error(`Source file not accessible: ${this.buffer.filename}`);
+    }
+    
     const fd = await fs.open(this.buffer.filename, 'r');
     try {
       const buffer = Buffer.alloc(pageInfo.originalSize);
       const { bytesRead } = await fd.read(buffer, 0, pageInfo.originalSize, pageInfo.fileOffset);
       
       if (bytesRead !== pageInfo.originalSize) {
+        // Check if this is due to file truncation/changes
+        const stats = await fd.stat();
+        if (pageInfo.fileOffset >= stats.size) {
+          throw new Error(`Source file truncated: page offset ${pageInfo.fileOffset} beyond file size ${stats.size}`);
+        }
         throw new Error(`Incomplete read from source: expected ${pageInfo.originalSize}, got ${bytesRead}`);
       }
       
@@ -657,6 +784,11 @@ class SafeFileWriter {
         pageInfo.isDirty = false;
         pageInfo.isDetached = false;
       }
+    }
+    
+    // Debug log to help with testing
+    if (process.env.NODE_ENV === 'test') {
+      console.log(`Buffer state after save: ${this.buffer.state}`);
     }
   }
 

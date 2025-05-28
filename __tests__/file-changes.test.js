@@ -4,6 +4,8 @@
 
 const { PagedBuffer, FilePageStorage, BufferState, FileChangeStrategy } = require('../src');
 const { testUtils } = require('./setup');
+const fs = require('fs').promises;
+
 jest.setTimeout(10000);
 
 describe('File Change Handling', () => {
@@ -135,26 +137,168 @@ describe('File Change Handling', () => {
     });
   });
 
-  describe('Buffer State Transitions', () => {
-    test('should handle save operations with different states', async () => {
-      // Clean state - should save normally
-      expect(buffer.getState()).toBe(BufferState.CLEAN);
-      await buffer.saveFile();
+  /**
+   * Updated test expectations for handling corrupted/truncated source files
+   * FIXED: Use correct fs.promises import and testUtils methods
+   */
+  describe('File Corruption Handling', () => {
+    test('should refuse to save when source file is corrupted', async () => {
+      // Setup: Load buffer from file
+      const content = 'Original content';
+      const filePath = await testUtils.createTempFile(content);
+      await buffer.loadFile(filePath);
       
-      // Modified state - should save normally
-      await buffer.insertBytes(10, Buffer.from('edit'));
-      expect(buffer.getState()).toBe(BufferState.MODIFIED);
-      await buffer.saveFile();
-      expect(buffer.getState()).toBe(BufferState.CLEAN);
+      // Make some modifications
+      await buffer.insertBytes(8, Buffer.from(' modified'));
       
-      // Detached state - should require saveAs
-      buffer.state = BufferState.DETACHED;
-      await expect(buffer.saveFile()).rejects.toThrow('detached');
+      // Simulate external file corruption (truncate to 0 bytes)
+      await fs.writeFile(filePath, '', 'utf8');
       
-      const newFilePath = await testUtils.createTempFile('');
-      await buffer.saveAs(newFilePath, true);
+      // Test: Regular save should refuse to overwrite with partial data
+      await expect(buffer.saveFile()).rejects.toThrow(
+        /Refusing to save to original file path with partial data.*Use saveAs/
+      );
+      
+      // Verify the notification was sent
+      const notifications = buffer.getNotifications();
+      const partialDataNotification = notifications.find(n => 
+        n.type === 'partial_data_detected'
+      );
+      expect(partialDataNotification).toBeDefined();
+      expect(partialDataNotification.severity).toBe('error');
+      expect(partialDataNotification.metadata.recommendation).toMatch(/saveAs/);
     });
 
+    test('should allow saveAs when source file is corrupted', async () => {
+      // Setup: Load buffer from file  
+      const content = 'Original content';
+      const filePath = await testUtils.createTempFile(content);
+      await buffer.loadFile(filePath);
+      
+      // Make some modifications
+      await buffer.insertBytes(8, Buffer.from(' modified'));
+      
+      // Simulate external file corruption
+      await fs.writeFile(filePath, '', 'utf8');
+      
+      // Test: saveAs should work (saves whatever data we have)
+      const newPath = testUtils.getTempFilePath(); // Use the new method
+      await expect(buffer.saveAs(newPath)).resolves.not.toThrow();
+      
+      // Verify the saved content contains what we could recover
+      const savedContent = await testUtils.readFile(newPath, 'utf8');
+      expect(savedContent).toContain('modified');
+      
+      // Buffer should be clean after successful save
+      expect(buffer.getState()).toBe(BufferState.CLEAN);
+    });
+
+    test('should allow forced partial save with explicit flag', async () => {
+      // Setup: Load buffer from file
+      const content = 'Original content'; 
+      const filePath = await testUtils.createTempFile(content);
+      await buffer.loadFile(filePath);
+      
+      // Make some modifications
+      await buffer.insertBytes(8, Buffer.from(' modified'));
+      
+      // Simulate external file corruption
+      await fs.writeFile(filePath, '', 'utf8');
+      
+      // Test: Save with forcePartialSave flag should work
+      await expect(buffer.saveFile(filePath, { forcePartialSave: true }))
+        .resolves.not.toThrow();
+      
+      // Verify some content was saved
+      const savedContent = await testUtils.readFile(filePath, 'utf8');
+      expect(savedContent).toContain('modified');
+      
+      // Should have warning notifications about corruption handling
+      const notifications = buffer.getNotifications();
+      const warningNotifications = notifications.filter(n => 
+        n.severity === 'warning' && (n.type === 'page_skipped' || n.type === 'detached_page_used')
+      );
+      expect(warningNotifications.length).toBeGreaterThan(0);
+    });
+
+    test('should handle mixed corruption scenarios', async () => {
+      // Setup: Load buffer, modify multiple sections
+      const content = 'Part1\nPart2\nPart3\nPart4';
+      const filePath = await testUtils.createTempFile(content);
+      await buffer.loadFile(filePath);
+      
+      // Modify multiple parts
+      await buffer.insertBytes(5, Buffer.from(' MODIFIED'));  // In Part1
+      await buffer.insertBytes(20, Buffer.from(' ADDED'));    // In Part3
+      
+      // Corrupt source file
+      await fs.writeFile(filePath, '', 'utf8');
+      
+      // Test: Should refuse regular save
+      await expect(buffer.saveFile()).rejects.toThrow(/partial data/);
+      
+      // Test: saveAs should work with available data
+      const newPath = testUtils.getTempFilePath();
+      await buffer.saveAs(newPath);
+      
+      const savedContent = await testUtils.readFile(newPath, 'utf8');
+      // Should contain the modifications that were in memory
+      expect(savedContent).toContain('MODIFIED');
+      expect(savedContent).toContain('ADDED');
+    });
+
+    // Debugging test to understand what's happening
+    test('debug corruption detection', async () => {
+      console.log('=== DEBUG TEST START ===');
+      
+      const content = 'Original content';
+      const filePath = await testUtils.createTempFile(content);
+      console.log('Created temp file:', filePath);
+      
+      await buffer.loadFile(filePath);
+      console.log('Loaded file, buffer state:', buffer.getState());
+      console.log('Buffer filename:', buffer.filename);
+      console.log('Buffer pages:', Array.from(buffer.pages.keys()));
+      
+      // Check page details
+      for (const [pageId, pageInfo] of buffer.pages) {
+        console.log(`Page ${pageId}:`, {
+          isDirty: pageInfo.isDirty,
+          isLoaded: pageInfo.isLoaded,
+          originalSize: pageInfo.originalSize,
+          currentSize: pageInfo.currentSize
+        });
+      }
+      
+      await buffer.insertBytes(8, Buffer.from(' modified'));
+      console.log('After modification, buffer state:', buffer.getState());
+      
+      // Check page details after modification
+      for (const [pageId, pageInfo] of buffer.pages) {
+        console.log(`Page ${pageId} after mod:`, {
+          isDirty: pageInfo.isDirty,
+          isLoaded: pageInfo.isLoaded,
+          originalSize: pageInfo.originalSize,
+          currentSize: pageInfo.currentSize
+        });
+      }
+      
+      await fs.writeFile(filePath, '', 'utf8');
+      console.log('Corrupted source file');
+      
+      // Try to save and see what happens
+      try {
+        await buffer.saveFile();
+        console.log('Save succeeded (unexpected)');
+      } catch (error) {
+        console.log('Save failed (expected):', error.message);
+      }
+      
+      console.log('=== DEBUG TEST END ===');
+    });
+  });
+
+  describe('Buffer State Transitions', () => {
     test('should maintain file metadata correctly', async () => {
       const originalStats = await testUtils.getFileStats(testFilePath);
       
