@@ -1,7 +1,6 @@
-/**
- * @fileoverview Buffer Undo/Redo System with operation merging - FIXED VERSION
+/* @fileoverview Buffer Undo/Redo System - Updated for Refactored State Management
  * @author Jeffrey R. Day
- * @version 1.0.0
+ * @version 2.1.0
  */
 
 const { BufferOperation, OperationType } = require('./buffer-operation');
@@ -16,7 +15,7 @@ class OperationGroup {
     this.name = name;
     this.operations = [];
     this.timestamp = Date.now();
-    this.isFromTransaction = false; // Flag to track transaction groups
+    this.isFromTransaction = false;
   }
 
   /**
@@ -60,7 +59,7 @@ class OperationTransaction {
 }
 
 /**
- * Buffer Undo/Redo System with intelligent operation merging - FIXED
+ * Buffer Undo/Redo System with improved defaults for cleaner operation separation
  */
 class BufferUndoSystem {
   constructor(buffer, maxUndoLevels = 50) {
@@ -74,9 +73,9 @@ class BufferUndoSystem {
     // Transaction support
     this.activeTransaction = null;
     
-    // Configuration
-    this.mergeTimeWindow = 5000; // 5 seconds
-    this.mergePositionWindow = 1000; // 1000 byte distance
+    // IMPROVED DEFAULTS: More conservative merge settings
+    this.mergeTimeWindow = 5000;      // Keep reasonable time window for rapid typing
+    this.mergePositionWindow = 0;     // DEFAULT TO ZERO - no position-based merging
     
     // State tracking
     this.isUndoing = false;
@@ -142,9 +141,7 @@ class BufferUndoSystem {
       timestamp || this.getClock()
     );
     
-    // CRITICAL: Set post-execution position BEFORE recording
     operation.setPostExecutionPosition(position);
-    
     this._recordOperation(operation);
     return operation;
   }
@@ -165,9 +162,7 @@ class BufferUndoSystem {
       timestamp || this.getClock()
     );
     
-    // CRITICAL: Set post-execution position BEFORE recording
-    operation.setPostExecutionPosition(position); // Delete position stays the same
-    
+    operation.setPostExecutionPosition(position);
     this._recordOperation(operation);
     return operation;
   }
@@ -189,15 +184,13 @@ class BufferUndoSystem {
       timestamp || this.getClock()
     );
     
-    // CRITICAL: Set post-execution position BEFORE recording
     operation.setPostExecutionPosition(position);
-    
     this._recordOperation(operation);
     return operation;
   }
 
   /**
-   * Record an operation - FIXED core logic for undo system
+   * Record an operation with improved merge logic
    * @param {BufferOperation} operation - Operation to record
    * @private
    */
@@ -224,19 +217,19 @@ class BufferUndoSystem {
       if (!topGroup.isFromTransaction && topGroup.operations.length > 0) {
         const lastOp = topGroup.operations[topGroup.operations.length - 1];
         
-        // Check if operations can be merged (logically)
+        // Check if operations can be merged
         if (lastOp.canMergeWith(operation, this.mergeTimeWindow, this.mergePositionWindow)) {
           
-          // CRITICAL FIX: Decide between physical merge vs logical merge
+          // IMPROVED: Only do physical merges for truly contiguous same-type operations
           const distance = this._getOperationDistance(lastOp, operation);
           
-          if (distance === 0 && this._areContiguousOperations(lastOp, operation)) {
-            // PHYSICAL MERGE: Operations are truly contiguous
-            console.log(`Physical merge: ${lastOp.type} + ${operation.type}`);
+          if (distance === 0 && 
+              this._areContiguousOperations(lastOp, operation) &&
+              lastOp.type === operation.type) {
+            // PHYSICAL MERGE: Operations are truly contiguous and same type
             lastOp.mergeWith(operation);
           } else {
             // LOGICAL MERGE: Operations should undo together but remain separate
-            console.log(`Logical merge: Adding ${operation.type} to existing group`);
             topGroup.operations.push(operation);
           }
           
@@ -269,17 +262,23 @@ class BufferUndoSystem {
   }
 
   /**
-   * Helper method to check if operations are truly contiguous
+   * More conservative contiguous operation detection
    */
   _areContiguousOperations(op1, op2) {
-    // Only insert operations can be physically merged
+    // Only insert operations of the same type can be physically merged
     if (op1.type !== 'insert' || op2.type !== 'insert') {
       return false;
     }
     
-    // Check if they're truly adjacent with no gap
+    // Check if they're truly adjacent with no gap and in correct order
     const distance = this._getOperationDistance(op1, op2);
-    return distance === 0;
+    if (distance !== 0) {
+      return false;
+    }
+    
+    // Additional check: second operation should start where first ends
+    const op1End = op1.preExecutionPosition + (op1.data ? op1.data.length : 0);
+    return Math.abs(op2.preExecutionPosition - op1End) <= 1;
   }
 
   // =================== TRANSACTION SUPPORT ===================
@@ -295,7 +294,6 @@ class BufferUndoSystem {
     }
     
     this.activeTransaction = new OperationTransaction(name, options);
-    // CRITICAL FIX: Use the same clock function as the undo system
     this.activeTransaction.startTime = this.getClock();
   }
 
@@ -316,7 +314,7 @@ class BufferUndoSystem {
         finalName || this.activeTransaction.name
       );
       group.operations = [...this.activeTransaction.operations];
-      group.isFromTransaction = true; // Mark as transaction group
+      group.isFromTransaction = true;
       
       this.undoStack.push(group);
       
@@ -339,12 +337,12 @@ class BufferUndoSystem {
       return false;
     }
     
-    // Undo all operations in reverse order
+    // Undo all operations in reverse order using VPM
     this.isUndoing = true;
     try {
       for (let i = this.activeTransaction.operations.length - 1; i >= 0; i--) {
         const operation = this.activeTransaction.operations[i];
-        await this._undoOperation(operation);
+        await this._undoOperationVPM(operation);
       }
     } finally {
       this.isUndoing = false;
@@ -373,11 +371,11 @@ class BufferUndoSystem {
   // =================== UNDO/REDO OPERATIONS ===================
 
   /**
-   * Undo the last operation group OR rollback active transaction - FIXED
+   * Undo the last operation group OR rollback active transaction
    * @returns {Promise<boolean>} - True if successful
    */
   async undo() {
-    // CRITICAL FIX: Handle undo during active transaction as rollback
+    // Handle undo during active transaction as rollback
     if (this.activeTransaction) {
       return await this.rollbackUndoTransaction();
     }
@@ -390,10 +388,10 @@ class BufferUndoSystem {
     
     this.isUndoing = true;
     try {
-      // Undo operations in reverse order
+      // Undo operations in reverse order using VPM
       for (let i = group.operations.length - 1; i >= 0; i--) {
         const operation = group.operations[i];
-        await this._undoOperation(operation);
+        await this._undoOperationVPM(operation);
       }
       
       this.redoStack.push(group);
@@ -420,9 +418,9 @@ class BufferUndoSystem {
     
     this.isUndoing = true;
     try {
-      // Redo operations in forward order
+      // Redo operations in forward order using VPM
       for (const operation of group.operations) {
-        await this._redoOperation(operation);
+        await this._redoOperationVPM(operation);
       }
       
       this.undoStack.push(group);
@@ -437,115 +435,121 @@ class BufferUndoSystem {
   }
 
   /**
-   * Undo a single operation
+   * Undo a single operation using Virtual Page Manager
    * @param {BufferOperation} operation - Operation to undo
    * @private
    */
-  async _undoOperation(operation) {
+  async _undoOperationVPM(operation) {
+    const vpm = this.buffer.virtualPageManager;
+    
     switch (operation.type) {
       case OperationType.INSERT:
         // Undo insert by deleting the inserted data
-        await this.buffer.deleteBytes(
+        await vpm.deleteRange(
           operation.preExecutionPosition,
           operation.preExecutionPosition + operation.data.length
         );
+        // Update buffer size
+        this.buffer.totalSize -= operation.data.length;
         break;
         
       case OperationType.DELETE:
         // Undo delete by inserting the original data back
-        await this.buffer.insertBytes(
-          operation.preExecutionPosition,
-          operation.originalData
-        );
+        await vpm.insertAt(operation.preExecutionPosition, operation.originalData);
+        // Update buffer size
+        this.buffer.totalSize += operation.originalData.length;
         break;
         
       case OperationType.OVERWRITE:
-        // CRITICAL FIX: For undo, we need to use the atomic overwrite method
-        // that doesn't trigger additional undo recording
-        const { page, relativePos } = await this.buffer._getPageForPosition(operation.preExecutionPosition);
-        await this.buffer._ensurePageLoaded(page);
-        
-        if (!page.data) {
-          page.data = Buffer.alloc(0);
-        }
-        
-        // Calculate the end position of the current data
-        const currentDataLength = operation.data.length;
-        const endPos = operation.preExecutionPosition + currentDataLength;
-        
-        // Replace the current data with the original data
-        const before = page.data.subarray(0, relativePos);
-        const after = page.data.subarray(relativePos + currentDataLength);
-        page.updateData(Buffer.concat([before, operation.originalData, after]), this.buffer.mode);
-        
-        // Update total size
-        this.buffer.totalSize = this.buffer.totalSize - currentDataLength + operation.originalData.length;
-        this.buffer.state = BufferState.MODIFIED;
+        // Undo overwrite by deleting new data and inserting original data
+        await vpm.deleteRange(
+          operation.preExecutionPosition,
+          operation.preExecutionPosition + operation.data.length
+        );
+        await vpm.insertAt(operation.preExecutionPosition, operation.originalData);
+        // Update buffer size
+        const sizeChange = operation.originalData.length - operation.data.length;
+        this.buffer.totalSize += sizeChange;
         break;
         
       default:
         throw new Error(`Unknown operation type: ${operation.type}`);
     }
+    
+    // REFACTORED STATE MANAGEMENT:
+    // Mark buffer as having unsaved changes (preserves data integrity state)
+    this.buffer._markAsModified();
   }
 
   /**
-   * Redo a single operation
+   * Redo a single operation using Virtual Page Manager
    * @param {BufferOperation} operation - Operation to redo
    * @private
    */
-  async _redoOperation(operation) {
+  async _redoOperationVPM(operation) {
+    const vpm = this.buffer.virtualPageManager;
+    
     switch (operation.type) {
       case OperationType.INSERT:
         // Redo insert
-        await this.buffer.insertBytes(
-          operation.preExecutionPosition,
-          operation.data
-        );
+        await vpm.insertAt(operation.preExecutionPosition, operation.data);
+        // Update buffer size
+        this.buffer.totalSize += operation.data.length;
         break;
         
       case OperationType.DELETE:
         // Redo delete
-        await this.buffer.deleteBytes(
+        await vpm.deleteRange(
           operation.preExecutionPosition,
           operation.preExecutionPosition + operation.originalData.length
         );
+        // Update buffer size
+        this.buffer.totalSize -= operation.originalData.length;
         break;
         
       case OperationType.OVERWRITE:
-        // Redo overwrite
-        await this.buffer.overwriteBytes(
+        // Redo overwrite by deleting original data and inserting new data
+        await vpm.deleteRange(
           operation.preExecutionPosition,
-          operation.data
+          operation.preExecutionPosition + operation.originalData.length
         );
+        await vpm.insertAt(operation.preExecutionPosition, operation.data);
+        // Update buffer size
+        const sizeChange = operation.data.length - operation.originalData.length;
+        this.buffer.totalSize += sizeChange;
         break;
         
       default:
         throw new Error(`Unknown operation type: ${operation.type}`);
     }
+    
+    // REFACTORED STATE MANAGEMENT:
+    // Mark buffer as having unsaved changes (preserves data integrity state)
+    this.buffer._markAsModified();
   }
 
   // =================== STATE QUERIES ===================
 
   /**
-   * Check if undo is available - FIXED
+   * Check if undo is available
    * @returns {boolean} - True if undo is available
    */
   canUndo() {
     // During active transaction, undo should be available for rollback
     if (this.activeTransaction) {
-      return true; // Can always rollback active transaction
+      return true;
     }
     return this.undoStack.length > 0;
   }
 
   /**
-   * Check if redo is available - FIXED
+   * Check if redo is available
    * @returns {boolean} - True if redo is available
    */
   canRedo() {
-    // CRITICAL FIX: Block redo during active transactions
+    // Block redo during active transactions
     if (this.activeTransaction) {
-      return false; // No redo allowed during transactions
+      return false;
     }
     return this.redoStack.length > 0;
   }

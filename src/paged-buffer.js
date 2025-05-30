@@ -1,6 +1,8 @@
 /**
- * PagedBuffer - High-performance buffer for massive files
- * Provides byte-level operations with minimal line information for calling libraries
+ * @fileoverview PagedBuffer - Enhanced with Detached Buffer System and Refactored State Management
+ * @description High-performance buffer with robust data loss tracking and transparent reporting
+ * @author Jeffrey R. Day
+ * @version 2.1.0
  */
 
 const fs = require('fs').promises;
@@ -16,11 +18,48 @@ const {
 const { NotificationType, BufferNotification } = require('./types/notifications');
 const { PageStorage } = require('./storage/page-storage');
 const { MemoryPageStorage } = require('./storage/memory-page-storage');
-const { PageInfo } = require('./utils/page-info');
-const { SafeFileWriter, SaveStrategy } = require('./utils/safe-file-writer');
+const { VirtualPageManager } = require('./virtual-page-manager');
 
 /**
- * PagedBuffer - Core buffer implementation with byte-level operations
+ * Tracks missing data ranges in detached buffers
+ */
+class MissingDataRange {
+  constructor(virtualStart, virtualEnd, originalFileStart = null, originalFileEnd = null, reason = 'unknown') {
+    this.virtualStart = virtualStart;
+    this.virtualEnd = virtualEnd;
+    this.originalFileStart = originalFileStart;
+    this.originalFileEnd = originalFileEnd;
+    this.reason = reason; // 'file_deleted', 'file_corrupted', 'storage_failed', etc.
+    this.size = virtualEnd - virtualStart;
+  }
+
+  /**
+   * Generate human-readable description of missing data
+   */
+  toDescription(mode = BufferMode.BINARY) {
+    const sizeDesc = this.size === 1 ? '1 byte' : `${this.size.toLocaleString()} bytes`;
+    let desc = `[Missing ${sizeDesc} from buffer addresses ${this.virtualStart.toLocaleString()} to ${this.virtualEnd.toLocaleString()}`;
+    
+    if (this.originalFileStart !== null && this.originalFileEnd !== null) {
+      desc += `, original file positions ${this.originalFileStart.toLocaleString()} to ${this.originalFileEnd.toLocaleString()}`;
+    }
+    
+    if (this.reason !== 'unknown') {
+      desc += `, reason: ${this.reason}`;
+    }
+    
+    desc += '.]';
+    
+    if (mode === BufferMode.UTF8) {
+      desc += '\n';
+    }
+    
+    return desc;
+  }
+}
+
+/**
+ * PagedBuffer - Enhanced with Virtual Page Manager and refactored state management
  */
 class PagedBuffer {
   constructor(pageSize = 64 * 1024, storage = null, maxMemoryPages = 100) {
@@ -37,14 +76,22 @@ class PagedBuffer {
     this.fileMtime = null;
     this.fileChecksum = null;
     
-    // Page management
-    this.pages = new Map();
-    this.pageOrder = [];
-    this.nextPageId = 0;
+    // Virtual Page Manager (replaces old page management)
+    this.virtualPageManager = new VirtualPageManager(this, pageSize);
+    this.virtualPageManager.maxLoadedPages = maxMemoryPages;
     
     // Virtual file state
     this.totalSize = 0;
+    
+    // REFACTORED STATE MANAGEMENT:
+    // Data integrity state (clean/detached/corrupted)
     this.state = BufferState.CLEAN;
+    // Modification state (separate from integrity)
+    this.hasUnsavedChanges = false;
+    
+    // Detached buffer tracking
+    this.missingDataRanges = [];
+    this.detachmentReason = null;
     
     // Notification system
     this.notifications = [];
@@ -63,6 +110,84 @@ class PagedBuffer {
     
     // Undo/Redo system
     this.undoSystem = null;
+  }
+
+  /**
+   * Mark buffer as detached due to data loss
+   * @param {string} reason - Reason for detachment
+   * @param {MissingDataRange[]} missingRanges - Missing data ranges
+   */
+  _markAsDetached(reason, missingRanges = []) {
+    const wasDetached = this.state === BufferState.DETACHED;
+    
+    // CRITICAL: Always transition to DETACHED when corruption is detected
+    this.state = BufferState.DETACHED;
+    this.detachmentReason = reason;
+    this.missingDataRanges = [...this.missingDataRanges, ...missingRanges];
+    
+    // Merge overlapping ranges
+    this._mergeMissingRanges();
+    
+    if (!wasDetached) {
+      this._notify(
+        NotificationType.BUFFER_DETACHED,
+        'warning',
+        `Buffer detached: ${reason}. Some data may be unavailable.`,
+        { 
+          reason, 
+          missingRanges: missingRanges.length,
+          totalMissingBytes: missingRanges.reduce((sum, range) => sum + range.size, 0),
+          recommendation: 'Use Save As to save available data to a new file'
+        }
+      );
+    }
+  }
+
+  /**
+   * Mark buffer as having unsaved changes
+   * @private
+   */
+  _markAsModified() {
+    this.hasUnsavedChanges = true;
+  }
+
+  /**
+   * Mark buffer as saved (no unsaved changes)
+   * @private
+   */
+  _markAsSaved() {
+    this.hasUnsavedChanges = false;
+  }
+
+  /**
+   * Merge overlapping missing data ranges
+   * @private
+   */
+  _mergeMissingRanges() {
+    if (this.missingDataRanges.length <= 1) return;
+    
+    // Sort by virtual start position
+    this.missingDataRanges.sort((a, b) => a.virtualStart - b.virtualStart);
+    
+    const merged = [this.missingDataRanges[0]];
+    
+    for (let i = 1; i < this.missingDataRanges.length; i++) {
+      const current = this.missingDataRanges[i];
+      const last = merged[merged.length - 1];
+      
+      if (current.virtualStart <= last.virtualEnd) {
+        // Overlapping or adjacent ranges - merge them
+        last.virtualEnd = Math.max(last.virtualEnd, current.virtualEnd);
+        last.size = last.virtualEnd - last.virtualStart;
+        if (current.originalFileEnd !== null && last.originalFileEnd !== null) {
+          last.originalFileEnd = Math.max(last.originalFileEnd, current.originalFileEnd);
+        }
+      } else {
+        merged.push(current);
+      }
+    }
+    
+    this.missingDataRanges = merged;
   }
 
   /**
@@ -132,6 +257,12 @@ class PagedBuffer {
       this.totalSize = stats.size;
       this.lastFileCheck = Date.now();
       
+      // Clear any previous state
+      this.state = BufferState.CLEAN;
+      this.hasUnsavedChanges = false;
+      this.missingDataRanges = [];
+      this.detachmentReason = null;
+      
       // Detect or set buffer mode
       if (mode) {
         this.mode = mode;
@@ -147,111 +278,73 @@ class PagedBuffer {
         this.mode = BufferMode.UTF8;
       }
       
+      // Calculate file checksum
+      this.fileChecksum = await this._calculateFileChecksum(filename);
+      
+      // Initialize Virtual Page Manager from file
+      this.virtualPageManager.initializeFromFile(filename, stats.size, this.fileChecksum);
+      
       this._notify(
         NotificationType.FILE_MODIFIED_ON_DISK,
         'info',
         `Loaded file in ${this.mode} mode`,
-        { filename, mode: this.mode, size: stats.size }
+        { filename, mode: this.mode, size: stats.size, state: this.state, hasUnsavedChanges: this.hasUnsavedChanges }
       );
       
-      // Calculate file checksum
-      this.fileChecksum = await this._calculateFileChecksum(filename);
-      
-      // Create page structure
-      await this._createPageStructure(filename);
-      
-      this.state = BufferState.CLEAN;
     } catch (error) {
       throw new Error(`Failed to load file: ${error.message}`);
     }
   }
 
   /**
-   * Load content from string
-   * @param {string} content - Text content
+   * Enhanced loadContent with proper initial state
    */
   loadContent(content) {
     this.filename = null;
     this.totalSize = Buffer.byteLength(content, 'utf8');
     this.mode = BufferMode.UTF8;
+    
+    // Clear any previous state
     this.state = BufferState.CLEAN;
+    this.hasUnsavedChanges = false;
+    this.missingDataRanges = [];
+    this.detachmentReason = null;
     
-    // Clear existing pages AND page order
-    this.pages.clear();
-    this.pageOrder = [];
-    this.nextPageId = 0;
-    
-    // Create pages just like file loading - split content into page-sized chunks
+    // Initialize Virtual Page Manager from content
     const contentBuffer = Buffer.from(content, 'utf8');
-    let offset = 0;
-    
-    while (offset < contentBuffer.length) {
-      const pageId = `page_${this.nextPageId++}`;
-      const chunkSize = Math.min(this.pageSize, contentBuffer.length - offset);
-      const chunk = contentBuffer.subarray(offset, offset + chunkSize);
-      
-      const checksum = PageInfo.calculateChecksum(chunk);
-      const pageInfo = new PageInfo(pageId, offset, chunkSize, checksum);
-      pageInfo.updateData(chunk, this.mode);
-      
-      this.pages.set(pageId, pageInfo);
-      // Add to page order since it's loaded
-      this.pageOrder.push(pageId);
-      
-      offset += chunkSize;
-    }
-    
-    // Handle empty content
-    if (contentBuffer.length === 0) {
-      const pageId = `page_${this.nextPageId++}`;
-      const pageInfo = new PageInfo(pageId, 0, 0);
-      pageInfo.updateData(Buffer.alloc(0), this.mode);
-      
-      this.pages.set(pageId, pageInfo);
-      this.pageOrder.push(pageId);
-    }
-    
-    // Trigger eviction after loading
-    this._evictPagesIfNeeded();
+    this.virtualPageManager.initializeFromContent(contentBuffer);
     
     this._notify(
       'buffer_content_loaded',
       'info',
-      `Loaded content in ${this.mode} mode (${this.pages.size} pages)`,
-      { mode: this.mode, size: this.totalSize, pages: this.pages.size }
+      `Loaded content in ${this.mode} mode`,
+      { mode: this.mode, size: this.totalSize, state: this.state, hasUnsavedChanges: this.hasUnsavedChanges }
     );
   }
 
   /**
-   * Create page structure by scanning file
-   * @param {string} filename - Source file
+   * Enhanced loadBinaryContent with proper initial state
    */
-  async _createPageStructure(filename) {
-    if (this.fileSize === 0) {
-      // Empty file - create empty page structure
-      return;
-    }
-
-    const fd = await fs.open(filename, 'r');
-    let offset = 0;
+  loadBinaryContent(content) {
+    this.filename = null;
+    this.totalSize = content.length;
+    this.mode = BufferMode.BINARY;
     
-    try {
-      while (offset < this.fileSize) {
-        const pageId = `page_${this.nextPageId++}`;
-        const readSize = Math.min(this.pageSize, this.fileSize - offset);
-        
-        const buffer = Buffer.alloc(readSize);
-        await fd.read(buffer, 0, readSize, offset);
-        
-        const checksum = PageInfo.calculateChecksum(buffer);
-        const pageInfo = new PageInfo(pageId, offset, readSize, checksum);
-        
-        this.pages.set(pageId, pageInfo);
-        offset += readSize;
-      }
-    } finally {
-      await fd.close();
-    }
+    // Clear any previous state
+    this.state = BufferState.CLEAN;
+    this.hasUnsavedChanges = false;
+    this.missingDataRanges = [];
+    this.detachmentReason = null;
+    
+    // Initialize Virtual Page Manager from content
+    this.virtualPageManager.initializeFromContent(content);
+    
+    this._notify(
+      'buffer_content_loaded',
+      'info',
+      `Loaded binary content`,
+      { mode: this.mode, size: this.totalSize, state: this.state, hasUnsavedChanges: this.hasUnsavedChanges }
+    );
   }
 
   /**
@@ -319,258 +412,10 @@ class PagedBuffer {
     }
   }
 
-  /**
-   * Get page that contains the given absolute byte position
-   * @param {number} absolutePos - Absolute byte position
-   * @returns {Promise<{page: PageInfo, relativePos: number}>}
-   */
-  async _getPageForPosition(absolutePos) {
-    if (absolutePos < 0) {
-      throw new Error(`Invalid position: ${absolutePos}`);
-    }
-
-    let currentPos = 0;
-    
-    for (const [pageId, pageInfo] of this.pages) {
-      if (absolutePos >= currentPos && absolutePos < currentPos + pageInfo.currentSize) {
-        await this._ensurePageLoaded(pageInfo);
-        return {
-          page: pageInfo,
-          relativePos: absolutePos - currentPos
-        };
-      }
-      currentPos += pageInfo.currentSize;
-    }
-
-    // Allow insertion at the very end
-    if (absolutePos === this.totalSize) {
-      // Create or get the last page for end insertion
-      const pageIds = Array.from(this.pages.keys());
-      if (pageIds.length === 0) {
-        // No pages exist, create one
-        const pageId = `page_${this.nextPageId++}`;
-        const pageInfo = new PageInfo(pageId, 0, 0);
-        pageInfo.updateData(Buffer.alloc(0), this.mode);
-        this.pages.set(pageId, pageInfo);
-        return {
-          page: pageInfo,
-          relativePos: 0
-        };
-      } else {
-        // Use the last page
-        const lastPageId = pageIds[pageIds.length - 1];
-        const lastPage = this.pages.get(lastPageId);
-        await this._ensurePageLoaded(lastPage);
-        return {
-          page: lastPage,
-          relativePos: lastPage.currentSize
-        };
-      }
-    }
-    
-    throw new Error(`Position ${absolutePos} is beyond end of buffer`);
-  }
+  // =================== CORE BYTE OPERATIONS (Enhanced with VPM) ===================
 
   /**
-   * Ensure a page is loaded into memory
-   * @param {PageInfo} pageInfo - Page to load
-   */
-  async _ensurePageLoaded(pageInfo) {
-    if (pageInfo.isLoaded) {
-      await this._updatePageAccess(pageInfo);
-      return;
-    }
-
-    try {
-      if (pageInfo.isDirty) {
-        // Load from storage if dirty
-        pageInfo.data = await this.storage.loadPage(pageInfo.pageId);
-      } else if (pageInfo.isDetached) {
-        // CRITICAL FIX: Handle detached pages gracefully - don't throw
-        // User should be able to continue working and save separately
-        this._notify(
-          NotificationType.PAGE_CONFLICT_DETECTED,
-          'warning',
-          `Page ${pageInfo.pageId} is detached from source file - content may be incomplete`,
-          { 
-            pageId: pageInfo.pageId, 
-            detached: true,
-            recommendation: 'Save your work to a new file to preserve changes'
-          }
-        );
-        
-        // Try to load from storage if available, otherwise use empty buffer
-        if (pageInfo.isDirty) {
-          try {
-            pageInfo.data = await this.storage.loadPage(pageInfo.pageId);
-          } catch (storageError) {
-            // If storage also fails, use empty buffer
-            pageInfo.data = Buffer.alloc(0);
-            this._notify(
-              NotificationType.STORAGE_ERROR,
-              'error',
-              `Cannot load detached page ${pageInfo.pageId} from storage: ${storageError.message}`,
-              { pageId: pageInfo.pageId, error: storageError.message }
-            );
-          }
-        } else {
-          // No dirty data and detached from file - provide empty buffer
-          pageInfo.data = Buffer.alloc(0);
-        }
-      } else if (this.filename && pageInfo.originalSize > 0) {
-        // Load from original file
-        const fd = await fs.open(this.filename, 'r');
-        try {
-          const buffer = Buffer.alloc(pageInfo.originalSize);
-          await fd.read(buffer, 0, pageInfo.originalSize, pageInfo.fileOffset);
-          
-          if (!pageInfo.verifyIntegrity(buffer)) {
-            this._notify(
-              NotificationType.PAGE_CONFLICT_DETECTED,
-              'warning',
-              `Page ${pageInfo.pageId} checksum mismatch`,
-              { pageId: pageInfo.pageId, offset: pageInfo.fileOffset }
-            );
-          }
-          
-          pageInfo.data = buffer;
-        } finally {
-          await fd.close();
-        }
-      } else {
-        // CRITICAL FIX: Always ensure data is a valid Buffer, never null
-        pageInfo.data = Buffer.alloc(0);
-      }
-
-      // CRITICAL FIX: Ensure data is never null after loading
-      if (!pageInfo.data) {
-        pageInfo.data = Buffer.alloc(0);
-      }
-
-      pageInfo.isLoaded = true;
-      pageInfo.lastAccess = Date.now();
-      
-      // Update access tracking and trigger eviction
-      await this._updatePageAccess(pageInfo);
-      
-    } catch (error) {
-      // CRITICAL FIX: On any error, provide empty buffer rather than leaving data null
-      pageInfo.data = Buffer.alloc(0);
-      pageInfo.isLoaded = true; // Mark as loaded to prevent infinite retry loops
-      
-      this._notify(
-        NotificationType.STORAGE_ERROR,
-        'error',
-        `Failed to load page ${pageInfo.pageId}: ${error.message}`,
-        { pageId: pageInfo.pageId, error: error.message }
-      );
-      
-      // Don't re-throw - let the operation continue with empty data
-      // This provides graceful degradation instead of crashing
-    }
-  }
-
-  /**
-   * Update page access for LRU tracking
-   * @param {PageInfo} pageInfo - Page that was accessed
-   */
-  async _updatePageAccess(pageInfo) {
-    pageInfo.lastAccess = Date.now();
-    
-    // Remove existing entry if present (maintain uniqueness)
-    const index = this.pageOrder.indexOf(pageInfo.pageId);
-    if (index > -1) {
-      this.pageOrder.splice(index, 1);
-    }
-    
-    // Add to end (most recently used)
-    this.pageOrder.push(pageInfo.pageId);
-    
-    // Trigger eviction check after every access
-    await this._evictPagesIfNeeded();
-  }
-
-  /**
-   * Evict pages if over memory limit
-   */
-  async _evictPagesIfNeeded() {
-    // Count currently loaded pages
-    let loadedCount = 0;
-    for (const pageInfo of this.pages.values()) {
-      if (pageInfo.isLoaded) {
-        loadedCount++;
-      }
-    }
-
-    // Evict oldest pages until we're under the limit
-    while (loadedCount > this.maxMemoryPages && this.pageOrder.length > 0) {
-      const oldestPageId = this.pageOrder.shift();
-      const pageInfo = this.pages.get(oldestPageId);
-      
-      if (pageInfo && pageInfo.isLoaded) {
-        try {
-          // Save dirty pages before evicting
-          if (pageInfo.isDirty) {
-            await this.storage.savePage(pageInfo.pageId, pageInfo.data);
-          }
-          
-          // Actually unload the page
-          pageInfo.data = null;
-          pageInfo.isLoaded = false;
-          loadedCount--;
-          
-          this._notify(
-            'page_evicted',
-            'debug',
-            `Evicted page ${pageInfo.pageId} due to memory pressure`,
-            { pageId: pageInfo.pageId, loadedPages: loadedCount }
-          );
-          
-        } catch (error) {
-          // Re-add to order if eviction failed
-          this.pageOrder.unshift(oldestPageId);
-          this._notify(
-            'page_eviction_failed',
-            'error',
-            `Failed to evict page ${pageInfo.pageId}: ${error.message}`,
-            { pageId: pageInfo.pageId, error: error.message }
-          );
-          break; // Stop trying to evict if we hit an error
-        }
-      }
-    }
-  }
-
-  /**
-   * Split a page that has grown too large
-   * @param {PageInfo} pageInfo - Page to split
-   */
-  async _splitPage(pageInfo) {
-    const splitPoint = Math.floor(pageInfo.currentSize / 2);
-    
-    const newPageId = `page_${this.nextPageId++}`;
-    const newPageData = pageInfo.data.subarray(splitPoint);
-    const newPageInfo = new PageInfo(newPageId, -1, 0);
-    newPageInfo.updateData(newPageData, this.mode);
-    newPageInfo.isDetached = true;
-    
-    const originalData = pageInfo.data.subarray(0, splitPoint);
-    pageInfo.updateData(originalData, this.mode);
-    
-    this.pages.set(newPageId, newPageInfo);
-    
-    this._notify(
-      NotificationType.LARGE_OPERATION,
-      'info',
-      `Split page ${pageInfo.pageId} due to size (${pageInfo.currentSize} bytes)`,
-      { originalPageId: pageInfo.pageId, newPageId, splitPoint }
-    );
-  }
-
-  // =================== CORE BYTE OPERATIONS ===================
-
-  /**
-   * Get bytes from absolute position
+   * Get bytes from absolute position with detachment detection
    * @param {number} start - Start byte position
    * @param {number} end - End byte position
    * @returns {Promise<Buffer>} - Data
@@ -582,32 +427,21 @@ class PagedBuffer {
     if (start > end) {
       return Buffer.alloc(0);
     }
-    // FIXED: Return empty buffer for start positions beyond buffer size
     if (start >= this.totalSize) {
-      return Buffer.alloc(0); // Don't throw, just return empty
+      return Buffer.alloc(0);
     }
     if (end > this.totalSize) {
-      end = this.totalSize; // Clamp to buffer size instead of throwing
+      end = this.totalSize;
     }
     
-    const chunks = [];
-    let currentPos = start;
-    
-    while (currentPos < end) {
-      const { page, relativePos } = await this._getPageForPosition(currentPos);
-      
-      // CRITICAL FIX: Ensure page is loaded before accessing data
-      await this._ensurePageLoaded(page);
-      
-      const endInPage = Math.min(relativePos + (end - currentPos), page.currentSize);
-      
-      if (endInPage > relativePos) {
-        chunks.push(page.data.subarray(relativePos, endInPage));
-      }
-      currentPos += (endInPage - relativePos);
+    try {
+      return await this.virtualPageManager.readRange(start, end);
+    } catch (error) {
+      // CRITICAL: If VPM fails to read data, this triggers detachment
+      // The VPM should have already called _markAsDetached through _handleCorruption
+      // So we just return empty buffer here
+      return Buffer.alloc(0);
     }
-    
-    return Buffer.concat(chunks);
   }
 
   /**
@@ -625,41 +459,24 @@ class PagedBuffer {
 
     // Capture values before execution for undo recording
     const originalPosition = position;
-    const originalData = Buffer.from(data); // Make a copy
-    
-    // CRITICAL FIX: Use undo system's clock instead of Date.now()
+    const originalData = Buffer.from(data);
     const timestamp = this.undoSystem ? this.undoSystem.getClock() : Date.now();
 
-    const { page, relativePos } = await this._getPageForPosition(position);
+    // Use Virtual Page Manager for insertion
+    const sizeChange = await this.virtualPageManager.insertAt(position, data);
     
-    await this._ensurePageLoaded(page);
-    
-    if (!page.data) {
-      page.data = Buffer.alloc(0);
-    }
-    
-    const before = page.data.subarray(0, relativePos);
-    const after = page.data.subarray(relativePos);
-    page.updateData(Buffer.concat([before, data, after]), this.mode);
-    
-    this.totalSize += data.length;
-    this.state = BufferState.MODIFIED;
+    // Update buffer state
+    this.totalSize += sizeChange;
+    this._markAsModified();
     
     // Record the operation AFTER executing it
     if (this.undoSystem) {
       this.undoSystem.recordInsert(originalPosition, originalData, timestamp);
     }
-    
-    if (page.currentSize > this.pageSize * 2) {
-      await this._splitPage(page);
-    }
   }
 
   /**
-   * Delete bytes from absolute range
-   * @param {number} start - Start position
-   * @param {number} end - End position
-   * @returns {Promise<Buffer>} - Deleted data
+   * Enhanced deleteBytes with proper state transition
    */
   async deleteBytes(start, end) {
     if (start < 0 || end < 0) {
@@ -677,21 +494,14 @@ class PagedBuffer {
 
     // Capture values before execution for undo recording
     const originalStart = start;
-    
-    // CRITICAL FIX: Use undo system's clock instead of Date.now()
     const timestamp = this.undoSystem ? this.undoSystem.getClock() : Date.now();
 
-    const deletedData = await this.getBytes(start, end);
+    // Use Virtual Page Manager for deletion
+    const deletedData = await this.virtualPageManager.deleteRange(start, end);
     
-    const { page, relativePos } = await this._getPageForPosition(start);
-    const deleteLength = end - start;
-    
-    const before = page.data.subarray(0, relativePos);
-    const after = page.data.subarray(relativePos + deleteLength);
-    page.updateData(Buffer.concat([before, after]), this.mode);
-    
-    this.totalSize -= deleteLength;
-    this.state = BufferState.MODIFIED;
+    // Update buffer state
+    this.totalSize -= deletedData.length;
+    this._markAsModified();
     
     // Record the operation AFTER executing it
     if (this.undoSystem) {
@@ -702,10 +512,7 @@ class PagedBuffer {
   }
 
   /**
-   * Overwrite bytes at absolute position
-   * @param {number} position - Position to overwrite
-   * @param {Buffer} data - New data
-   * @returns {Promise<Buffer>} - Original data that was overwritten
+   * Enhanced overwriteBytes with proper state transition
    */
   async overwriteBytes(position, data) {
     if (position < 0) {
@@ -717,15 +524,13 @@ class PagedBuffer {
 
     // Capture values before execution for undo recording
     const originalPosition = position;
-    const originalData = Buffer.from(data); // Make a copy
-    
-    // CRITICAL FIX: Use undo system's clock instead of Date.now()
+    const originalData = Buffer.from(data);
     const timestamp = this.undoSystem ? this.undoSystem.getClock() : Date.now();
 
     const endPos = Math.min(position + data.length, this.totalSize);
     const overwrittenData = await this.getBytes(position, endPos);
     
-    // CRITICAL FIX: Disable undo recording temporarily to prevent delete/insert from being recorded
+    // Disable undo recording temporarily for delete/insert operations
     const undoSystem = this.undoSystem;
     this.undoSystem = null;
     
@@ -737,6 +542,8 @@ class PagedBuffer {
       // Restore undo system
       this.undoSystem = undoSystem;
     }
+    
+    // The delete/insert operations above already marked as modified
     
     // Record the operation AFTER executing it
     if (this.undoSystem) {
@@ -757,7 +564,7 @@ class PagedBuffer {
       return [0];
     }
 
-    const lineStarts = [0]; // Always start with position 0 (first line)
+    const lineStarts = [0];
     const totalSize = this.getTotalSize();
     
     if (totalSize === 0) {
@@ -771,10 +578,8 @@ class PagedBuffer {
       const chunk = await this.getBytes(pos, endPos);
       
       for (let i = 0; i < chunk.length; i++) {
-        if (chunk[i] === 0x0A) { // Found newline character
+        if (chunk[i] === 0x0A) {
           const nextLineStart = pos + i + 1;
-          // CRITICAL FIX: Always add line start after newline, even if it's at EOF
-          // This ensures empty lines (including final empty line) are counted
           lineStarts.push(nextLineStart);
         }
       }
@@ -789,8 +594,6 @@ class PagedBuffer {
    */
   async getLineCount() {
     const lineStarts = await this.getLineStarts();
-    // Line count equals the number of line starts
-    // This correctly counts empty lines, including final empty line after last \n
     return lineStarts.length;
   }
 
@@ -809,9 +612,7 @@ class PagedBuffer {
       lineStarts = await this.getLineStarts();
     }
 
-    // CRITICAL FIX: Handle line beyond available lines
     if (line >= lineStarts.length) {
-      // Return end of buffer for lines beyond what exists
       return this.getTotalSize();
     }
 
@@ -821,19 +622,14 @@ class PagedBuffer {
       return lineStartByte;
     }
 
-    // CRITICAL FIX: Calculate line end properly, considering final empty line
     let lineEndByte;
     if (line + 1 < lineStarts.length) {
-      // Not the last line - end is one byte before next line start (before the \n)
       lineEndByte = lineStarts[line + 1] - 1;
     } else {
-      // This is the last line - end is buffer end
       lineEndByte = this.getTotalSize();
     }
 
-    // Handle empty lines correctly
     if (lineStartByte >= lineEndByte) {
-      // This is an empty line (like final empty line after last \n)
       return lineStartByte;
     }
 
@@ -863,7 +659,6 @@ class PagedBuffer {
       lineStarts = await this.getLineStarts();
     }
 
-    // Binary search to find the correct line
     let left = 0;
     let right = lineStarts.length - 1;
     
@@ -884,25 +679,19 @@ class PagedBuffer {
       return {line, character: 0};
     }
 
-    // CRITICAL FIX: Calculate line end properly for character conversion
     let lineEndByte;
     if (line + 1 < lineStarts.length) {
-      // Not the last line - end is one byte before next line start (excludes \n)
       lineEndByte = lineStarts[line + 1] - 1;
     } else {
-      // This is the last line - end is buffer end
       lineEndByte = this.getTotalSize();
     }
 
-    // Handle case where bytePos is exactly at or beyond line end
     if (bytePos >= lineEndByte) {
-      // Position is at end of line (at the \n or beyond)
       const lineBytes = await this.getBytes(lineStartByte, lineEndByte);
       const lineText = lineBytes.toString('utf8');
       return {line, character: lineText.length};
     }
 
-    // Normal case - position is within the line content
     const lineBytes = await this.getBytes(lineStartByte, Math.min(lineStartByte + byteOffsetInLine, lineEndByte));
     const partialText = lineBytes.toString('utf8');
     
@@ -982,7 +771,7 @@ class PagedBuffer {
     }
   }
 
-/**
+  /**
    * Begin a named undo transaction
    * @param {string} name - Name/description of the transaction
    * @param {Object} options - Transaction options  
@@ -1077,15 +866,54 @@ class PagedBuffer {
    * @returns {number} - Total size
    */
   getTotalSize() {
-    return this.totalSize;
+    return this.virtualPageManager.getTotalSize();
   }
 
   /**
-   * Get buffer state
+   * Get buffer state (data integrity)
    * @returns {string} - Buffer state
    */
   getState() {
+    // Validate state consistency
+    if (this.state === BufferState.DETACHED && this.missingDataRanges.length === 0) {
+      console.warn('Buffer marked as DETACHED but has no missing data ranges');
+    }
+    
     return this.state;
+  }
+
+  /**
+   * Check if buffer has unsaved changes
+   * @returns {boolean} - True if there are unsaved changes
+   */
+  hasChanges() {
+    return this.hasUnsavedChanges;
+  }
+
+  /**
+   * Check if buffer can be saved to its original location
+   * @returns {boolean} - True if safe to save to original location
+   */
+  canSaveToOriginal() {
+    return this.state !== BufferState.DETACHED;
+  }
+
+  /**
+   * Get comprehensive buffer status
+   * @returns {Object} - Complete status information
+   */
+  getStatus() {
+    return {
+      state: this.state,
+      hasUnsavedChanges: this.hasUnsavedChanges,
+      canSaveToOriginal: this.canSaveToOriginal(),
+      isDetached: this.state === BufferState.DETACHED,
+      isCorrupted: this.state === BufferState.CORRUPTED,
+      missingDataRanges: this.missingDataRanges.length,
+      totalSize: this.getTotalSize(),
+      filename: this.filename,
+      mode: this.mode
+    };
   }
 
   /**
@@ -1101,23 +929,7 @@ class PagedBuffer {
    * @returns {Object} - Memory statistics
    */
   getMemoryStats() {
-    let loadedPages = 0;
-    let dirtyPages = 0;
-    let detachedPages = 0;
-    let memoryUsed = 0;
-    
-    for (const pageInfo of this.pages.values()) {
-      if (pageInfo.isLoaded) {
-        loadedPages++;
-        memoryUsed += pageInfo.currentSize;
-      }
-      if (pageInfo.isDirty) {
-        dirtyPages++;
-      }
-      if (pageInfo.isDetached) {
-        detachedPages++;
-      }
-    }
+    const vpmStats = this.virtualPageManager.getMemoryStats();
     
     const undoStats = this.undoSystem ? this.undoSystem.getStats() : {
       undoGroups: 0,
@@ -1129,15 +941,42 @@ class PagedBuffer {
     };
     
     return {
-      totalPages: this.pages.size,
-      loadedPages,
-      dirtyPages,
-      detachedPages,
-      memoryUsed,
+      // VPM stats
+      totalPages: vpmStats.totalPages,
+      loadedPages: vpmStats.loadedPages,
+      dirtyPages: vpmStats.dirtyPages,
+      detachedPages: 0, // VPM handles this differently
+      memoryUsed: vpmStats.memoryUsed,
       maxMemoryPages: this.maxMemoryPages,
+      
+      // Buffer stats
       state: this.state,
+      hasUnsavedChanges: this.hasUnsavedChanges,
       mode: this.mode,
+      virtualSize: vpmStats.virtualSize,
+      sourceSize: vpmStats.sourceSize,
+      
+      // Undo stats
       undo: undoStats
+    };
+  }
+
+  /**
+   * Get detachment information
+   * @returns {Object} Detachment details
+   */
+  getDetachmentInfo() {
+    return {
+      isDetached: this.state === BufferState.DETACHED,
+      reason: this.detachmentReason,
+      missingRanges: this.missingDataRanges.length,
+      totalMissingBytes: this.missingDataRanges.reduce((sum, range) => sum + range.size, 0),
+      ranges: this.missingDataRanges.map(range => ({
+        virtualStart: range.virtualStart,
+        virtualEnd: range.virtualEnd,
+        size: range.size,
+        reason: range.reason
+      }))
     };
   }
 
@@ -1169,178 +1008,491 @@ class PagedBuffer {
     this.changeStrategy = { ...this.changeStrategy, ...strategies };
   }
 
-  // =================== FILE METHODS ===================
+  // =================== FILE METHODS WITH DETACHED BUFFER SUPPORT ===================
 
   /**
-   * Save the buffer using safe conflict-aware strategies
-   * @param {string} [filename] - Filename to save to (defaults to current filename)
-   * @param {Object} options - Save options
-   * @param {boolean} options.forcePartialSave - Allow saving partial data when source is corrupted
+   * Generate missing data summary for save operations
+   * @private
+   */
+  _generateMissingDataSummary() {
+    if (this.missingDataRanges.length === 0) {
+      return '';
+    }
+    
+    let summary = '';
+    const header = this.mode === BufferMode.UTF8 ? 
+      '--- MISSING DATA SUMMARY ---\n' : 
+      '--- MISSING DATA SUMMARY ---\n';
+    
+    summary += header;
+    
+    for (const range of this.missingDataRanges) {
+      summary += range.toDescription(this.mode);
+    }
+    
+    const footer = this.mode === BufferMode.UTF8 ? 
+      '--- END MISSING DATA ---\n\n' : 
+      '--- END MISSING DATA ---\n\n';
+    
+    summary += footer;
+    
+    return summary;
+  }
+
+  /**
+   * Create marker for missing data at a specific position
+   * @private
+   */
+  _createMissingDataMarker(missingRange) {
+    const nl = '\n'; // Use newlines even for binary for readability
+    
+    let marker = `${nl}--- MISSING ${missingRange.size.toLocaleString()} BYTES `;
+    marker += `FROM BUFFER ADDRESS ${missingRange.virtualStart.toLocaleString()} `;
+    
+    if (missingRange.originalFileStart !== null) {
+      marker += `(ORIGINAL FILE POSITION ${missingRange.originalFileStart.toLocaleString()}) `;
+    }
+    
+    if (missingRange.reason && missingRange.reason !== 'unknown') {
+      marker += `- REASON: ${missingRange.reason.toUpperCase()} `;
+    }
+    
+    marker += `---${nl}`;
+    marker += `--- BEGIN DATA BELONGING AT BUFFER ADDRESS ${missingRange.virtualEnd.toLocaleString()} ---${nl}`;
+    
+    return marker;
+  }
+
+  /**
+   * Create marker for missing data at end of file
+   * @private
+   */
+  _createEndOfFileMissingMarker(lastRange, totalSize) {
+    const nl = '\n';
+    const missingAtEnd = lastRange.virtualEnd - totalSize;
+    
+    if (missingAtEnd <= 0) return '';
+    
+    let marker = `${nl}--- MISSING ${missingAtEnd.toLocaleString()} BYTES AT END OF FILE `;
+    
+    if (lastRange.originalFileStart !== null) {
+      const originalEnd = lastRange.originalFileEnd || (lastRange.originalFileStart + lastRange.size);
+      const missingOriginalAtEnd = originalEnd - (lastRange.originalFileStart + (totalSize - lastRange.virtualStart));
+      if (missingOriginalAtEnd > 0) {
+        marker += `(ORIGINAL FILE BYTES ${(originalEnd - missingOriginalAtEnd).toLocaleString()} TO ${originalEnd.toLocaleString()}) `;
+      }
+    }
+    
+    if (lastRange.reason && lastRange.reason !== 'unknown') {
+      marker += `- REASON: ${lastRange.reason.toUpperCase()} `;
+    }
+    
+    marker += `---${nl}`;
+    
+    return marker;
+  }
+
+  /**
+   * Create emergency marker for data that became unavailable during save
+   * @private
+   */
+  _createEmergencyMissingMarker(startPos, endPos, reason) {
+    const nl = '\n';
+    const size = endPos - startPos;
+    
+    let marker = `${nl}--- EMERGENCY: ${size.toLocaleString()} BYTES UNAVAILABLE DURING SAVE `;
+    marker += `FROM BUFFER ADDRESS ${startPos.toLocaleString()} `;
+    marker += `- REASON: ${reason.toUpperCase()} ---${nl}`;
+    marker += `--- BEGIN DATA BELONGING AT BUFFER ADDRESS ${endPos.toLocaleString()} ---${nl}`;
+    
+    // Add this as a new missing range for future reference
+    const emergencyRange = new MissingDataRange(
+      startPos, 
+      endPos, 
+      startPos, 
+      endPos, 
+      `save_failure: ${reason}`
+    );
+    
+    if (!this.missingDataRanges.some(range => 
+      range.virtualStart === startPos && range.virtualEnd === endPos)) {
+      this.missingDataRanges.push(emergencyRange);
+      this._mergeMissingRanges();
+    }
+    
+    return marker;
+  }
+
+  /**
+   * Write data with markers indicating where missing data belongs
+   * @private
+   */
+  async _writeDataWithMissingMarkers(fd) {
+    const totalSize = this.getTotalSize();
+    if (totalSize === 0) return;
+    
+    // Sort missing ranges by position for proper insertion
+    const sortedMissingRanges = [...this.missingDataRanges].sort((a, b) => 
+      a.virtualStart - b.virtualStart
+    );
+    
+    let currentPos = 0;
+    let missingRangeIndex = 0;
+    
+    while (currentPos < totalSize || missingRangeIndex < sortedMissingRanges.length) {
+      // Check if we've reached a missing data range
+      if (missingRangeIndex < sortedMissingRanges.length) {
+        const missingRange = sortedMissingRanges[missingRangeIndex];
+        
+        if (currentPos === missingRange.virtualStart) {
+          // Insert missing data marker
+          const marker = this._createMissingDataMarker(missingRange);
+          await fd.write(Buffer.from(marker));
+          
+          // Skip over the missing range
+          currentPos = missingRange.virtualEnd;
+          missingRangeIndex++;
+          continue;
+        }
+      }
+      
+      // Find the next chunk to write (either to end or to next missing range)
+      let chunkEnd = totalSize;
+      if (missingRangeIndex < sortedMissingRanges.length) {
+        chunkEnd = Math.min(chunkEnd, sortedMissingRanges[missingRangeIndex].virtualStart);
+      }
+      
+      if (currentPos < chunkEnd) {
+        // Write available data chunk
+        try {
+          const chunk = await this.virtualPageManager.readRange(currentPos, chunkEnd);
+          if (chunk.length > 0) {
+            await fd.write(chunk);
+          }
+        } catch (error) {
+          // Data became unavailable during save - add an emergency marker
+          const emergencyMarker = this._createEmergencyMissingMarker(currentPos, chunkEnd, error.message);
+          await fd.write(Buffer.from(emergencyMarker));
+        }
+        
+        currentPos = chunkEnd;
+      } else {
+        break;
+      }
+    }
+    
+    // Check for missing data at the end of file
+    if (sortedMissingRanges.length > 0) {
+      const lastRange = sortedMissingRanges[sortedMissingRanges.length - 1];
+      if (lastRange.virtualEnd >= totalSize) {
+        const endMarker = this._createEndOfFileMissingMarker(lastRange, totalSize);
+        await fd.write(Buffer.from(endMarker));
+      }
+    }
+  }
+  
+  /**
+   * Enhanced save method with smart behavior and atomic operations
    */
   async saveFile(filename = this.filename, options = {}) {
     if (!filename) {
       throw new Error('No filename specified');
     }
 
+    // CRITICAL: Check for detached buffer trying to save to original path
     if (this.state === BufferState.DETACHED) {
-      throw new Error('Buffer is detached - must use saveAs() with complete data verification');
+      const isOriginalFile = this.filename && path.resolve(filename) === path.resolve(this.filename);
+      
+      if (isOriginalFile && !options.forcePartialSave) {
+        throw new Error(
+          `Refusing to save to original file path with partial data. ` +
+          `Missing ${this.missingDataRanges.length} data range(s). ` +
+          `Use saveAs() to save to a different location, or pass forcePartialSave=true to override.`
+        );
+      }
     }
 
-    const writer = new SafeFileWriter(this, options);
-    await writer.save(filename, options);
-    
-    // Ensure state is updated after successful save
-    // This is a safety check in case the SafeFileWriter didn't update it
-    if (this.state !== BufferState.CLEAN) {
-      await this._updateMetadataAfterSave(filename);
+    // SMART SAVE: If saving to same file and buffer is clean with no changes, it's a no-op
+    const isSameFile = this.filename && path.resolve(filename) === path.resolve(this.filename);
+    if (isSameFile && this.state === BufferState.CLEAN && !this.hasUnsavedChanges && this.filename) {
+      // File is unmodified and we're saving to the same location - no need to save
+      this._notify(
+        'save_skipped',
+        'info',
+        'Save skipped: buffer is unmodified',
+        { filename, reason: 'unmodified_same_file' }
+      );
+      return;
+    }
+
+    if (isSameFile) {
+      await this._performAtomicSave(filename, options);
+    } else {
+      await this._performSave(filename, options);
     }
   }
 
   /**
-   * Save to a new filename (save-as operation)
-   * @param {string} filename - New filename
-   * @param {boolean|Object} forcePartialOrOptions - Force partial save (legacy) or options object
-   * @param {Object} options - Save options (if first param is boolean)
+   * Enhanced saveAs that handles detached buffers gracefully
    */
   async saveAs(filename, forcePartialOrOptions = {}, options = {}) {
     if (!filename) {
       throw new Error('Filename required for saveAs operation');
     }
 
-    // Handle legacy signature: saveAs(filename, forcePartial, options)
-    let forcePartial = false;
     let saveOptions = {};
     
     if (typeof forcePartialOrOptions === 'boolean') {
-      forcePartial = forcePartialOrOptions;
+      // Legacy boolean parameter - ignore it for saveAs
       saveOptions = { ...options };
     } else {
       saveOptions = { ...forcePartialOrOptions };
-      forcePartial = saveOptions.forcePartial || false;
     }
 
-    // Check for detached buffer state - only enforce if forcePartial is false
-    if (this.state === BufferState.DETACHED && !forcePartial) {
-      const missingPages = [];
-      for (const [pageId, pageInfo] of this.pages) {
-        if (!pageInfo.isLoaded && !pageInfo.isDirty) {
-          missingPages.push(pageId);
-        }
+    // saveAs always allows saving detached buffers - that's the point
+    await this._performSave(filename, { ...saveOptions, allowDetached: true });
+  }
+
+  /**
+   * Enhanced save method with positional missing data markers
+   * @private
+   */
+  async _performSave(filename, options = {}) {
+    const fd = await fs.open(filename, 'w');
+    
+    try {
+      // For detached buffers, add missing data summary at the beginning
+      if (this.state === BufferState.DETACHED && this.missingDataRanges.length > 0) {
+        const summary = this._generateMissingDataSummary();
+        await fd.write(Buffer.from(summary));
+        
+        this._notify(
+          'detached_save_summary',
+          'info',
+          `Added missing data summary to saved file: ${this.missingDataRanges.length} missing range(s)`,
+          { 
+            filename, 
+            missingRanges: this.missingDataRanges.length,
+            summarySize: summary.length
+          }
+        );
       }
       
-      if (missingPages.length > 0) {
-        throw new Error(`Cannot save detached buffer - missing pages: ${missingPages.join(', ')}`);
-      }
+      // Write data with positional markers for missing ranges
+      await this._writeDataWithMissingMarkers(fd);
+      
+    } finally {
+      await fd.close();
     }
-
-    // Configure save options based on forcePartial flag
-    saveOptions.allowPartialSave = forcePartial;
-
-    // Save-as operations are always safe (no in-place conflicts)
-    const writer = new SafeFileWriter(this, saveOptions);
-    await writer.save(filename, saveOptions);
     
-    // Ensure state is updated after successful save
-    // This is a safety check in case the SafeFileWriter didn't update it
-    if (this.state !== BufferState.CLEAN) {
-      await this._updateMetadataAfterSave(filename);
-    }
-  }
-
-  /**
-   * Analyze modifications without performing save (for diagnostics)
-   * @param {string} [filename] - Target filename for analysis (defaults to current)
-   * @returns {Object} Analysis result
-   */
-  analyzeModifications(filename = this.filename) {
-    if (!filename) {
-      throw new Error('Filename required for modification analysis');
-    }
-
-    const { ModificationAnalyzer } = require('./utils/safe-file-writer');
-    const analyzer = new ModificationAnalyzer(this);
-    return analyzer.analyze(filename);
-  }
-
-  /**
-   * Get save strategy recommendation
-   * @param {string} [filename] - Target filename (defaults to current)
-   * @returns {Object} Strategy info
-   */
-  getSaveStrategy(filename = this.filename) {
-    if (!filename) {
-      throw new Error('Filename required for strategy analysis');
-    }
-
-    const analysis = this.analyzeModifications(filename);
-    return {
-      strategy: analysis.strategy,
-      riskLevel: analysis.riskLevel,
-      conflictCount: analysis.conflicts.length,
-      isNewFile: analysis.isNewFile,
-      stats: analysis.stats,
-      recommendation: this._getStrategyRecommendation(analysis)
-    };
-  }
-
-  /**
-   * Get human-readable strategy recommendation
-   * @private
-   */
-  _getStrategyRecommendation(analysis) {
-    const recommendations = {
-      [SaveStrategy.NEW_FILE]: {
-        description: "Writing to new file - no conflicts possible",
-        diskSpace: "No extra space needed",
-        speed: "Fast"
-      },
-      [SaveStrategy.SAFE_INPLACE]: {
-        description: "Safe to overwrite file directly - no conflicts detected",
-        diskSpace: "Backup space only",
-        speed: "Fastest"
-      },
-      [SaveStrategy.REVERSE_ORDER]: {
-        description: "Write pages in reverse order to avoid conflicts",
-        diskSpace: "Backup space only",
-        speed: "Fast"
-      },
-      [SaveStrategy.PARTIAL_TEMP]: {
-        description: `Buffer ${Math.round(analysis.stats.conflictSize / 1024 / 1024)}MB of conflicting data`,
-        diskSpace: `${Math.round(analysis.stats.conflictSize / 1024 / 1024)}MB temporary buffers + backup`,
-        speed: "Moderate"
-      },
-      [SaveStrategy.ATOMIC_TEMP]: {
-        description: "Write to temporary file then rename (safest)",
-        diskSpace: "Full file size temporarily",
-        speed: "Slower for large files"
-      }
-    };
-
-    return recommendations[analysis.strategy] || {
-      description: "Unknown strategy",
-      diskSpace: "Unknown",
-      speed: "Unknown"
-    };
-  }
-
-  /**
-   * Update buffer metadata after successful save (called by SafeFileWriter)
-   * @private
-   */
-  async _updateMetadataAfterSave(filename) {
+    // Update metadata after successful save
     const stats = await fs.stat(filename);
     this.filename = filename;
     this.fileSize = stats.size;
     this.fileMtime = stats.mtime;
-    this.totalSize = stats.size;
-    this.state = BufferState.CLEAN;
+    this.totalSize = this.virtualPageManager.getTotalSize(); // Keep VPM as source of truth
     
-    // Mark all pages as clean
-    for (const pageInfo of this.pages.values()) {
-      pageInfo.isDirty = false;
-      pageInfo.isDetached = false;
+    // Mark as saved (no unsaved changes)
+    this._markAsSaved();
+    
+    // Only mark as clean if we're not detached
+    if (this.state !== BufferState.DETACHED) {
+      this.state = BufferState.CLEAN;
     }
   }
 
+  /**
+   * Atomic save that uses temporary copy to prevent corruption
+   */
+  async _performAtomicSave(filename, options = {}) {
+    let tempCopyPath = null;
+    
+    try {
+      // Step 1: Create temporary copy of original file (if it exists and we need it)
+      if (await this._fileExists(filename)) {
+        tempCopyPath = await this._createTempCopy(filename);
+        
+        this._notify(
+          'atomic_save_started',
+          'info',
+          `Created temporary copy for atomic save: ${tempCopyPath}`,
+          { originalFile: filename, tempCopy: tempCopyPath }
+        );
+      }
+
+      // Step 2: Update VPM to use temp copy for original file reads
+      if (tempCopyPath) {
+        this._updateVPMSourceFile(tempCopyPath);
+      }
+
+      // Step 3: Perform the actual save
+      await this._performSave(filename, { ...options, isAtomicSave: true });
+
+      // Step 4: Update metadata and state after successful save
+      await this._updateMetadataAfterSave(filename);
+
+    } catch (error) {
+      // If atomic save fails, we need to restore the VPM source
+      if (tempCopyPath) {
+        this._updateVPMSourceFile(filename); // Restore original
+      }
+      throw error;
+    } finally {
+      // Step 5: Always cleanup temp copy
+      if (tempCopyPath) {
+        await this._cleanupTempCopy(tempCopyPath);
+      }
+    }
+  }
+  
+  /**
+   * Create a temporary copy of the original file
+   */
+  async _createTempCopy(originalPath) {
+    const fs = require('fs').promises;
+    const os = require('os');
+    
+    const tempDir = os.tmpdir();
+    const baseName = path.basename(originalPath);
+    const tempName = `paged-buffer-${Date.now()}-${Math.random().toString(36).substr(2, 9)}-${baseName}`;
+    const tempPath = path.join(tempDir, tempName);
+    
+    await fs.copyFile(originalPath, tempPath);
+    return tempPath;
+  }
+
+  /**
+   * Update VPM to use a different source file path
+   */
+  _updateVPMSourceFile(newPath) {
+    // Update all original-type page descriptors to use the new path
+    for (const descriptor of this.virtualPageManager.addressIndex.getAllPages()) {
+      if (descriptor.sourceType === 'original' && descriptor.sourceInfo.filename) {
+        descriptor.sourceInfo.filename = newPath;
+      }
+    }
+    
+    // Update manager's source file reference
+    this.virtualPageManager.sourceFile = newPath;
+  }
+  
+  /**
+   * Cleanup temporary copy
+   */
+  async _cleanupTempCopy(tempPath) {
+    try {
+      const fs = require('fs').promises;
+      await fs.unlink(tempPath);
+      
+      this._notify(
+        'temp_cleanup',
+        'debug',
+        `Cleaned up temporary copy: ${tempPath}`,
+        { tempPath }
+      );
+    } catch (error) {
+      // Log warning but don't fail the save
+      this._notify(
+        'temp_cleanup_failed',
+        'warning',
+        `Failed to cleanup temporary copy: ${error.message}`,
+        { tempPath, error: error.message }
+      );
+    }
+  }
+
+  /**
+   * Update metadata after successful save
+   */
+  async _updateMetadataAfterSave(filename) {
+    const fs = require('fs').promises;
+    
+    try {
+      const stats = await fs.stat(filename);
+      this.filename = filename;
+      this.fileSize = stats.size;
+      this.fileMtime = stats.mtime;
+      
+      // Mark as saved
+      this._markAsSaved();
+      
+      // CRITICAL: Mark buffer as clean after successful save (unless detached)
+      if (this.state !== BufferState.DETACHED) {
+        this.state = BufferState.CLEAN;
+      }
+      
+      // Update VPM source to point back to the saved file
+      this._updateVPMSourceFile(filename);
+      
+      this._notify(
+        'save_completed',
+        'info',
+        `Successfully saved to ${filename}`,
+        { 
+          filename, 
+          size: stats.size, 
+          newState: this.state,
+          hasUnsavedChanges: this.hasUnsavedChanges,
+          wasAtomic: true 
+        }
+      );
+      
+    } catch (error) {
+      this._notify(
+        'save_metadata_update_failed',
+        'warning',
+        `Save succeeded but metadata update failed: ${error.message}`,
+        { filename, error: error.message }
+      );
+    }
+  }
+
+  /**
+   * Check if file exists
+   */
+  async _fileExists(filePath) {
+    try {
+      const fs = require('fs').promises;
+      await fs.access(filePath);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Method to manually mark buffer as clean (for testing/special cases)
+   */
+  _markAsClean() {
+    if (this.state !== BufferState.DETACHED) {
+      this.state = BufferState.CLEAN;
+    }
+    this._markAsSaved();
+  }
+
+  /**
+   * Method to check if buffer has been modified
+   * @deprecated Use hasChanges() instead
+   */
+  isModified() {
+    return this.hasUnsavedChanges;
+  }
+
+  /**
+   * Method to check if buffer is detached
+   */
+  isDetached() {
+    return this.state === BufferState.DETACHED;
+  }
+
+  /**
+   * Method to check if buffer is clean
+   */
+  isClean() {
+    return this.state === BufferState.CLEAN && !this.hasUnsavedChanges;
+  }
+
 }
-module.exports = { PagedBuffer };
+
+// Export the MissingDataRange class as well for testing
+module.exports = { PagedBuffer, MissingDataRange };

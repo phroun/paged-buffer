@@ -10,17 +10,15 @@ const BufferMode = {
 };
 
 /**
- * Buffer state enumeration
+ * Buffer data integrity state enumeration
  * @enum {string}
  */
 const BufferState = {
-  /** No modifications, synced with file */
+  /** Data is intact and synchronized with source */
   CLEAN: 'clean',
-  /** Has modifications, can still save */
-  MODIFIED: 'modified',
-  /** Conflicts exist, must save-as */
+  /** Some data is missing or source is unavailable, must save-as */
   DETACHED: 'detached',
-  /** Serious data integrity issues */
+  /** Serious data integrity issues detected */
   CORRUPTED: 'corrupted'
 };
 

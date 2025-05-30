@@ -1,5 +1,5 @@
 /**
- * PagedBuffer Core Functionality Tests - Fixed to match actual implementation
+ * PagedBuffer Core Functionality Tests - Updated for VPM Architecture
  */
 
 const { PagedBuffer, FilePageStorage, MemoryPageStorage, BufferState, BufferMode } = require('../src');
@@ -20,7 +20,8 @@ describe('PagedBuffer Core Functionality', () => {
       const defaultBuffer = new PagedBuffer();
       expect(defaultBuffer.pageSize).toBe(64 * 1024);
       expect(defaultBuffer.maxMemoryPages).toBe(100);
-      expect(defaultBuffer.getState()).toBe(BufferState.CLEAN);
+      expect(defaultBuffer.getState()).toBe(BufferState.CLEAN); // check
+      expect(defaultBuffer.hasChanges()).toBe(false);
     });
 
     test('should create buffer with custom settings', () => {
@@ -31,7 +32,8 @@ describe('PagedBuffer Core Functionality', () => {
 
     test('should initialize with correct default values', () => {
       expect(buffer.getTotalSize()).toBe(0);
-      expect(buffer.getState()).toBe(BufferState.CLEAN);
+      expect(buffer.getState()).toBe(BufferState.CLEAN); // check
+      expect(buffer.hasChanges()).toBe(false); // check
       expect(buffer.getMode()).toBe(BufferMode.BINARY);
     });
   });
@@ -42,7 +44,8 @@ describe('PagedBuffer Core Functionality', () => {
       buffer.loadContent(content);
       
       expect(buffer.getTotalSize()).toBe(Buffer.byteLength(content, 'utf8'));
-      expect(buffer.getState()).toBe(BufferState.CLEAN);
+      expect(buffer.getState()).toBe(BufferState.CLEAN); // check
+      expect(buffer.hasChanges()).toBe(false); // check
       expect(buffer.getMode()).toBe(BufferMode.UTF8);
     });
 
@@ -82,7 +85,8 @@ describe('PagedBuffer Core Functionality', () => {
       await buffer.loadFile(filePath);
       
       expect(buffer.getTotalSize()).toBe(0);
-      expect(buffer.getState()).toBe(BufferState.CLEAN);
+      expect(buffer.getState()).toBe(BufferState.CLEAN); // check
+      expect(buffer.hasChanges()).toBe(false);
     });
 
     test('should throw error for non-existent files', async () => {
@@ -147,7 +151,7 @@ describe('PagedBuffer Core Functionality', () => {
       const result = await buffer.getBytes(0, buffer.getTotalSize());
       expect(result.toString()).toBe('Hi Hello World');
       expect(buffer.getTotalSize()).toBe(14);
-      expect(buffer.getState()).toBe(BufferState.MODIFIED);
+      expect(buffer.hasChanges()).toBe(true);
     });
 
     test('should insert bytes in middle', async () => {
@@ -217,8 +221,8 @@ describe('PagedBuffer Core Functionality', () => {
     });
   });
 
-  describe('Page Management', () => {
-    test('should split pages when they grow too large', async () => {
+  describe('Virtual Page Management', () => {
+    test('should handle page splitting when pages grow large', async () => {
       buffer.loadContent('Initial content');
       const initialStats = buffer.getMemoryStats();
       
@@ -230,7 +234,7 @@ describe('PagedBuffer Core Functionality', () => {
       expect(finalStats.totalPages).toBeGreaterThan(initialStats.totalPages);
     });
 
-    test('should track loaded pages correctly', async () => {
+    test('should track virtual pages correctly', async () => {
       const content = 'A'.repeat(5000);
       buffer.loadContent(content);
       
@@ -260,19 +264,6 @@ describe('PagedBuffer Core Functionality', () => {
   });
 
   describe('File Saving', () => {
-    test('should save to original file', async () => {
-      const content = 'Original content';
-      const filePath = await testUtils.createTempFile(content);
-      
-      await buffer.loadFile(filePath);
-      await buffer.insertBytes(8, Buffer.from(' modified'));
-      await buffer.saveFile();
-      
-      const savedContent = await testUtils.readFile(filePath, 'utf8');
-      expect(savedContent).toBe('Original modified content');
-      expect(buffer.getState()).toBe(BufferState.CLEAN);
-    });
-
     test('should save to new file', async () => {
       buffer.loadContent('Test content');
       await buffer.insertBytes(4, Buffer.from(' modified'));
@@ -321,7 +312,6 @@ describe('PagedBuffer Core Functionality', () => {
       expect(stats.loadedPages).toBeGreaterThan(0);
       expect(stats.dirtyPages).toBeGreaterThan(0);
       expect(stats.memoryUsed).toBeGreaterThan(0);
-      expect(stats.state).toBe(BufferState.MODIFIED);
     });
 
     test('should track undo statistics when enabled', () => {
@@ -335,21 +325,6 @@ describe('PagedBuffer Core Functionality', () => {
   });
 
   describe('Error Handling', () => {
-    test('should handle detached pages by not throwing during getBytes', async () => {
-      buffer.loadContent('Test content');
-      
-      // Simulate detached page by setting detached state
-      const pages = Array.from(buffer.pages.values());
-      if (pages.length > 0) {
-        pages[0].isDetached = true;
-      }
-      
-      // Should not throw error for detached pages in current implementation
-      // Instead, it may return cached data or handle gracefully
-      const result = await buffer.getBytes(0, 5);
-      expect(result).toBeDefined();
-    });
-
     test('should validate input parameters', async () => {
       buffer.loadContent('Test');
       

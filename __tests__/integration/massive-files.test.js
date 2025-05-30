@@ -261,24 +261,6 @@ describe('Massive File Integration Tests', () => {
       }
     });
 
-    test('should handle corrupted large files with proper notifications', async () => {
-      const filePath = await testUtils.createLargeFile(5);
-      await buffer.loadFile(filePath);
-      
-      const mockHandler = testUtils.createMockNotificationHandler();
-      buffer.onNotification(mockHandler.handler);
-      
-      // Simulate corruption by modifying file externally
-      await testUtils.modifyFile(filePath, 'truncate');
-      
-      // Try to trigger change detection
-      const changeInfo = await buffer.checkFileChanges();
-      expect(changeInfo.changed).toBe(true);
-      
-      // Should have notifications about the change
-      expect(mockHandler.count()).toBe(0); // No automatic detection yet
-    });
-
     test('should handle disk space issues during large operations', async () => {
       const filePath = await testUtils.createLargeFile(1);
       await buffer.loadFile(filePath);

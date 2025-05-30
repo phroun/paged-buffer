@@ -1,7 +1,8 @@
 /**
- * @fileoverview Paged Buffer System - Main Entry Point
+ * @fileoverview Paged Buffer System - Enhanced with Virtual Page Manager
  * @description High-performance buffer system for handling arbitrarily large files
- * with constant memory usage, intelligent undo/redo, and pluggable storage backends.
+ * with constant memory usage, intelligent undo/redo, robust address translation,
+ * and pluggable storage backends.
  * 
  * @example
  * const { PagedBuffer } = require('paged-buffer-system');
@@ -12,7 +13,7 @@
  * await buffer.insertBytes(100, Buffer.from('Hello'));
  * 
  * @author Jeffrey R. Day
- * @version 0.1.0
+ * @version 2.0.0
  */
 
 const { PagedBuffer } = require('./paged-buffer');
@@ -21,6 +22,7 @@ const { PageStorage } = require('./storage/page-storage');
 const { FilePageStorage } = require('./storage/file-page-storage');
 const { MemoryPageStorage } = require('./storage/memory-page-storage');
 const { PageInfo } = require('./utils/page-info');
+const { VirtualPageManager, PageDescriptor, PageAddressIndex } = require('./virtual-page-manager');
 const { 
   BufferMode, 
   BufferState, 
@@ -35,6 +37,7 @@ module.exports = {
   // Core classes
   PagedBuffer,
   BufferUndoSystem,
+  VirtualPageManager,
   
   // Storage implementations
   PageStorage,
@@ -43,6 +46,8 @@ module.exports = {
   
   // Utility classes
   PageInfo,
+  PageDescriptor,
+  PageAddressIndex,
   BufferOperation,
   OperationGroup,
   BufferNotification,

@@ -154,7 +154,7 @@ class BufferOperation {
    * @param {number} positionWindow - Position window for merging (bytes)
    * @returns {boolean} - True if mergeable
    */
-  canMergeWith(other, timeWindow = 15000, positionWindow = 1000) {
+  canMergeWith(other, timeWindow = 15000, positionWindow = -1) {
     // Check time window first
     const timeDiff = Math.abs(this.timestamp - other.timestamp);
     const timeWithinWindow = timeDiff <= timeWindow;
@@ -163,28 +163,32 @@ class BufferOperation {
       return false;
     }
     
-    // Check distance (for logical grouping)
-    let distance;
-    if (this.postExecutionPosition !== null) {
-      try {
-        distance = this.getLogicalDistance(other);
-      } catch (error) {
+    // IMPROVED: If position window is 0 (default), skip position check
+    // This means operations only merge based on time, not position
+    if (positionWindow >= 0) {
+      // Check distance (for logical grouping)
+      let distance;
+      if (this.postExecutionPosition !== null) {
+        try {
+          distance = this.getLogicalDistance(other);
+        } catch (error) {
+          distance = Math.abs(this.preExecutionPosition - other.preExecutionPosition);
+        }
+      } else {
         distance = Math.abs(this.preExecutionPosition - other.preExecutionPosition);
       }
-    } else {
-      distance = Math.abs(this.preExecutionPosition - other.preExecutionPosition);
-    }
-    
-    const distanceWithinWindow = distance <= positionWindow;
-    
-    if (!distanceWithinWindow) {
-      return false;
+      
+      const distanceWithinWindow = distance <= positionWindow;
+      
+      if (!distanceWithinWindow) {
+        return false;
+      }
     }
     
     // Check type compatibility for grouping
     return this._areOperationsCompatible(this.type, other.type);
-  }
-
+  };
+  
   /**
    * Check if two operation types are compatible for merging
    * @param {string} type1 - First operation type

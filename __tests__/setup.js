@@ -371,6 +371,79 @@ class TestUtils {
       return false;
     }
   }
+
+
+  /**
+   * Force cache invalidation for corruption testing
+   * This ensures the VPM will try to read from the source file again
+   * @param {PagedBuffer} buffer - Buffer instance
+   */
+  forceSourceReload(buffer) {
+    if (!buffer.virtualPageManager) return;
+    
+    const vpm = buffer.virtualPageManager;
+    
+    // Clear all caches and force reload from source
+    if (vpm.pageCache) vpm.pageCache.clear();
+    if (vpm.loadedPages) vpm.loadedPages.clear();
+    if (vpm.lruOrder) vpm.lruOrder.length = 0;
+    
+    // Reset page descriptors
+    if (vpm.addressIndex && vmp.addressIndex.pages) {
+      for (const descriptor of vpm.addressIndex.pages) {
+        if (descriptor.sourceType === 'original') {
+          descriptor.isLoaded = false;
+        }
+      }
+    }
+  }
+
+  /**
+   * Force cache invalidation for only unmodified original pages
+   * This preserves modified pages while ensuring unmodified regions trigger source reads
+   * @param {PagedBuffer} buffer - Buffer instance
+   */
+  forceUnmodifiedSourceReload(buffer) {
+    if (!buffer.virtualPageManager) return;
+    
+    const vpm = buffer.virtualPageManager;
+    
+    // Only clear unmodified original pages
+    if (vpm.pageCache && vpm.loadedPages && vpm.addressIndex) {
+      for (const [pageId, pageInfo] of vpm.pageCache) {
+        const descriptor = vpm.addressIndex.pages.find(p => p.pageId === pageId);
+        if (descriptor && descriptor.sourceType === 'original' && !descriptor.isDirty) {
+          vpm.pageCache.delete(pageId);
+          vpm.loadedPages.delete(pageId);
+          descriptor.isLoaded = false;
+          
+          // Remove from LRU order
+          const lruIndex = vpm.lruOrder.indexOf(pageId);
+          if (lruIndex >= 0) {
+            vpm.lruOrder.splice(lruIndex, 1);
+          }
+        }
+      }
+    }
+  }
+
+  /**
+   * Test corruption detection by reading from a specific range
+   * @param {PagedBuffer} buffer - Buffer instance
+   * @param {number} start - Start position
+   * @param {number} end - End position
+   * @returns {Promise<{result: Buffer, detached: boolean, allZeros: boolean}>}
+   */
+  async testCorruptionDetection(buffer, start, end) {
+    this.forceUnmodifiedSourceReload(buffer);
+    
+    const result = await buffer.getBytes(start, end);
+    const detached = buffer.getState() === 'detached';
+    const allZeros = result.length > 0 && result.every(byte => byte === 0);
+    
+    return { result, detached, allZeros };
+  }
+
 }
 
 // Global test utilities instance

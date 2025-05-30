@@ -7,6 +7,22 @@ const NotificationType = {
   FILE_MODIFIED_ON_DISK: 'file_modified_on_disk',
   FILE_SIZE_CHANGED: 'file_size_changed',
   FILE_DELETED: 'file_deleted',
+
+  // Save operations
+  SAVE_SKIPPED: 'save_skipped',
+  ATOMIC_SAVE_STARTED: 'atomic_save_started',
+  SAVE_COMPLETED: 'save_completed',
+  SAVE_METADATA_UPDATE_FAILED: 'save_metadata_update_failed',
+  TEMP_CLEANUP: 'temp_cleanup',
+  TEMP_CLEANUP_FAILED: 'temp_cleanup_failed',
+  
+  // Data integrity
+  PARTIAL_DATA_DETECTED: 'partial_data_detected',
+  EMERGENCY_MISSING_DATA: 'emergency_missing_data',
+  
+  // Page operations
+  PAGE_SPLIT: 'page_split',
+  PAGE_EVICTED: 'page_evicted',
   
   // Page conflicts
   PAGE_CONFLICT_DETECTED: 'page_conflict_detected',

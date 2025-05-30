@@ -1,0 +1,350 @@
+/**
+ * Filesystem compatibility testing for atomic rename operations
+ */
+
+const fs = require('fs').promises;
+const path = require('path');
+const os = require('os');
+const crypto = require('crypto');
+
+class FilesystemCompatibilityTester {
+  constructor() {
+    this.testCache = new Map(); // Cache results to avoid repeated tests
+    this.testTimeout = 5000; // 5 second timeout for tests
+  }
+
+  /**
+   * Test if atomic rename will work between temp directory and target
+   * @param {string} targetPath - Target file path
+   * @returns {Promise<Object>} - Test result with details
+   */
+  async testAtomicRename(targetPath) {
+    const targetDir = path.dirname(path.resolve(targetPath));
+    const tempDir = os.tmpdir();
+    
+    // Check cache first
+    const cacheKey = `${tempDir}→${targetDir}`;
+    if (this.testCache.has(cacheKey)) {
+      return this.testCache.get(cacheKey);
+    }
+
+    const result = await this._performRenameTest(tempDir, targetDir);
+    
+    // Cache successful results for 5 minutes
+    if (result.success) {
+      setTimeout(() => this.testCache.delete(cacheKey), 5 * 60 * 1000);
+    }
+    this.testCache.set(cacheKey, result);
+    
+    return result;
+  }
+
+  /**
+   * Perform the actual rename test
+   * @private
+   */
+  async _performRenameTest(tempDir, targetDir) {
+    const testId = crypto.randomBytes(8).toString('hex');
+    const tempFile = path.join(tempDir, `atomic-test-${testId}.tmp`);
+    const targetFile = path.join(targetDir, `atomic-test-${testId}.tmp`);
+    
+    const startTime = Date.now();
+    
+    try {
+      // Create a small test file in temp directory
+      const testContent = `Atomic rename test ${testId} at ${new Date().toISOString()}`;
+      await fs.writeFile(tempFile, testContent);
+      
+      // Get file stats before rename
+      const tempStats = await fs.stat(tempFile);
+      
+      // Attempt atomic rename
+      const renameStart = Date.now();
+      await fs.rename(tempFile, targetFile);
+      const renameTime = Date.now() - renameStart;
+      
+      // Verify the rename worked
+      const targetStats = await fs.stat(targetFile);
+      const targetContent = await fs.readFile(targetFile, 'utf8');
+      
+      // Verify integrity
+      if (targetContent !== testContent) {
+        throw new Error('Content mismatch after rename');
+      }
+      
+      if (targetStats.size !== tempStats.size) {
+        throw new Error('Size mismatch after rename');
+      }
+      
+      // Clean up
+      await fs.unlink(targetFile);
+      
+      const totalTime = Date.now() - startTime;
+      
+      return {
+        success: true,
+        tempDir,
+        targetDir,
+        renameTimeMs: renameTime,
+        totalTimeMs: totalTime,
+        crossFilesystem: this._detectCrossFilesystem(tempDir, targetDir),
+        details: {
+          testFileSize: tempStats.size,
+          renameWasAtomic: renameTime < 100, // Very fast = likely atomic
+          filesystemInfo: await this._getFilesystemInfo(tempDir, targetDir)
+        }
+      };
+      
+    } catch (error) {
+      // Clean up any remaining files
+      try { await fs.unlink(tempFile); } catch {}
+      try { await fs.unlink(targetFile); } catch {}
+      
+      const totalTime = Date.now() - startTime;
+      
+      return {
+        success: false,
+        tempDir,
+        targetDir,
+        error: error.message,
+        errorCode: error.code,
+        totalTimeMs: totalTime,
+        crossFilesystem: this._detectCrossFilesystem(tempDir, targetDir),
+        recommendation: this._getRecommendation(error)
+      };
+    }
+  }
+
+  /**
+   * Detect if paths are on different filesystems
+   * @private
+   */
+  _detectCrossFilesystem(path1, path2) {
+    // Simple heuristic - different drive letters on Windows
+    if (process.platform === 'win32') {
+      const drive1 = path.parse(path1).root;
+      const drive2 = path.parse(path2).root;
+      return drive1 !== drive2;
+    }
+    
+    // On Unix-like systems, different mount points
+    // This is a simplified check - real detection would need to check device IDs
+    const resolved1 = path.resolve(path1);
+    const resolved2 = path.resolve(path2);
+    
+    // Common cross-filesystem scenarios
+    const crossPatterns = [
+      /^\/tmp.*→.*\/home/, // /tmp to /home
+      /^\/tmp.*→.*\/var/,  // /tmp to /var
+      /^\/var.*→.*\/home/, // /var to /home
+    ];
+    
+    const pathPair = `${resolved1}→${resolved2}`;
+    return crossPatterns.some(pattern => pattern.test(pathPair));
+  }
+
+  /**
+   * Get filesystem information
+   * @private
+   */
+  async _getFilesystemInfo(tempDir, targetDir) {
+    const info = {
+      tempDir: { path: tempDir },
+      targetDir: { path: targetDir }
+    };
+    
+    try {
+      // Try to get filesystem stats (Node.js doesn't have great cross-platform support)
+      const tempStats = await fs.stat(tempDir);
+      const targetStats = await fs.stat(targetDir);
+      
+      info.tempDir.deviceId = tempStats.dev;
+      info.targetDir.deviceId = targetStats.dev;
+      info.sameDevice = tempStats.dev === targetStats.dev;
+      
+    } catch (error) {
+      info.error = `Could not get filesystem info: ${error.message}`;
+    }
+    
+    return info;
+  }
+
+  /**
+   * Get recommendation based on error
+   * @private
+   */
+  _getRecommendation(error) {
+    if (error.code === 'EXDEV') {
+      return 'Cross-device link not supported. Use SAFE_INPLACE or PARTIAL_TEMP strategy instead.';
+    }
+    
+    if (error.code === 'EACCES' || error.code === 'EPERM') {
+      return 'Permission denied. Check file/directory permissions.';
+    }
+    
+    if (error.code === 'ENOSPC') {
+      return 'No space left on device. Free up disk space or use different temp directory.';
+    }
+    
+    if (error.code === 'EMFILE' || error.code === 'ENFILE') {
+      return 'Too many open files. This is a temporary system limitation.';
+    }
+    
+    return 'Atomic rename failed. Consider using alternative save strategy.';
+  }
+
+  /**
+   * Test with timeout protection
+   * @param {string} targetPath - Target file path
+   * @param {number} timeoutMs - Timeout in milliseconds
+   * @returns {Promise<Object>} - Test result or timeout error
+   */
+  async testWithTimeout(targetPath, timeoutMs = this.testTimeout) {
+    return new Promise(async (resolve, reject) => {
+      const timeoutId = setTimeout(() => {
+        resolve({
+          success: false,
+          error: 'Atomic rename test timed out',
+          timeout: true,
+          timeoutMs,
+          recommendation: 'Filesystem too slow for atomic operations. Use SAFE_INPLACE strategy.'
+        });
+      }, timeoutMs);
+      
+      try {
+        const result = await this.testAtomicRename(targetPath);
+        clearTimeout(timeoutId);
+        resolve(result);
+      } catch (error) {
+        clearTimeout(timeoutId);
+        resolve({
+          success: false,
+          error: error.message,
+          exception: true,
+          recommendation: 'Unexpected error during atomic rename test.'
+        });
+      }
+    });
+  }
+
+  /**
+   * Clear the test cache
+   */
+  clearCache() {
+    this.testCache.clear();
+  }
+
+  /**
+   * Get cache statistics
+   */
+  getCacheStats() {
+    return {
+      size: this.testCache.size,
+      entries: Array.from(this.testCache.keys())
+    };
+  }
+}
+
+// =================== INTEGRATION WITH SAFE FILE WRITER ===================
+
+/**
+ * Enhanced strategy selection with filesystem compatibility testing
+ */
+class SmartStrategySelector {
+  constructor() {
+    this.fsTest = new FilesystemCompatibilityTester();
+  }
+
+  /**
+   * Select optimal strategy with filesystem compatibility checking
+   * @param {Object} buffer - PagedBuffer instance
+   * @param {Object} analysis - Modification analysis
+   * @param {string} filename - Target filename
+   * @returns {Promise<Object>} - Strategy selection with reasoning
+   */
+  async selectStrategy(buffer, analysis, filename) {
+    const fileSize = buffer.totalSize;
+    const conflictCount = analysis.conflicts.length;
+    const isNewFile = analysis.isNewFile;
+    
+    // New file operations are always safe and efficient
+    if (isNewFile) {
+      return {
+        strategy: 'NEW_FILE',
+        reason: 'Save-as operation - safest and most efficient',
+        filesystemTest: null
+      };
+    }
+    
+    // For simple cases, prefer SAFE_INPLACE
+    if (conflictCount === 0 && fileSize < 500 * 1024 * 1024) { // < 500MB
+      return {
+        strategy: 'SAFE_INPLACE',
+        reason: 'No conflicts, moderate size - efficient in-place save with backup',
+        filesystemTest: null
+      };
+    }
+    
+    // For large files or complex conflicts, test atomic rename capability
+    const shouldTestAtomic = (
+      fileSize > 500 * 1024 * 1024 || // Large files benefit from atomic safety
+      conflictCount > 5 ||             // Complex conflicts need maximum safety
+      analysis.riskLevel === 'HIGH' || analysis.riskLevel === 'CRITICAL'
+    );
+    
+    if (shouldTestAtomic && fileSize < 2 * 1024 * 1024 * 1024) { // < 2GB (avoid 2x disk usage for huge files)
+      const fsTest = await this.fsTest.testWithTimeout(filename, 3000); // 3 second timeout
+      
+      if (fsTest.success && fsTest.renameTimeMs < 500) { // Fast rename = good filesystem support
+        return {
+          strategy: 'ATOMIC_TEMP',
+          reason: 'Complex modifications + atomic rename available - maximum safety',
+          filesystemTest: fsTest
+        };
+      } else {
+        // Atomic rename not suitable, fall back to alternative
+        const fallbackReason = fsTest.error || 'Atomic rename too slow/unreliable';
+        
+        if (conflictCount <= 3) {
+          return {
+            strategy: 'REVERSE_ORDER',
+            reason: `${fallbackReason}. Using reverse order for limited conflicts.`,
+            filesystemTest: fsTest
+          };
+        } else {
+          return {
+            strategy: 'PARTIAL_TEMP',
+            reason: `${fallbackReason}. Using partial temp buffers for complex conflicts.`,
+            filesystemTest: fsTest
+          };
+        }
+      }
+    }
+    
+    // Default fallback for large files or when atomic not tested
+    if (fileSize > 1024 * 1024 * 1024) { // > 1GB
+      return {
+        strategy: 'SAFE_INPLACE',
+        reason: 'Large file - avoiding 2x disk usage of atomic temp',
+        filesystemTest: null
+      };
+    } else if (conflictCount <= 3) {
+      return {
+        strategy: 'REVERSE_ORDER', 
+        reason: 'Limited conflicts - efficient reverse order write',
+        filesystemTest: null
+      };
+    } else {
+      return {
+        strategy: 'PARTIAL_TEMP',
+        reason: 'Complex conflicts - partial temp buffers',
+        filesystemTest: null
+      };
+    }
+  }
+}
+
+module.exports = {
+  FilesystemCompatibilityTester,
+  SmartStrategySelector
+};
