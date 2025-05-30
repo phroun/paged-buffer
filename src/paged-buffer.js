@@ -1124,12 +1124,16 @@ class PagedBuffer {
   }
 
   /**
-   * Write data with markers indicating where missing data belongs
+   * Write data with markers indicating where missing data belongs - FIXED for large files
    * @private
    */
   async _writeDataWithMissingMarkers(fd) {
     const totalSize = this.getTotalSize();
     if (totalSize === 0) return;
+    
+    // Calculate maximum chunk size to prevent memory issues
+    const maxChunkSize = this.pageSize * this.maxMemoryPages;
+    console.log(`Writing file with chunk size: ${maxChunkSize.toLocaleString()} bytes`);
     
     // Sort missing ranges by position for proper insertion
     const sortedMissingRanges = [...this.missingDataRanges].sort((a, b) => 
@@ -1156,26 +1160,16 @@ class PagedBuffer {
         }
       }
       
-      // Find the next chunk to write (either to end or to next missing range)
-      let chunkEnd = totalSize;
+      // Find the next chunk boundary (either to end or to next missing range)
+      let segmentEnd = totalSize;
       if (missingRangeIndex < sortedMissingRanges.length) {
-        chunkEnd = Math.min(chunkEnd, sortedMissingRanges[missingRangeIndex].virtualStart);
+        segmentEnd = Math.min(segmentEnd, sortedMissingRanges[missingRangeIndex].virtualStart);
       }
       
-      if (currentPos < chunkEnd) {
-        // Write available data chunk
-        try {
-          const chunk = await this.virtualPageManager.readRange(currentPos, chunkEnd);
-          if (chunk.length > 0) {
-            await fd.write(chunk);
-          }
-        } catch (error) {
-          // Data became unavailable during save - add an emergency marker
-          const emergencyMarker = this._createEmergencyMissingMarker(currentPos, chunkEnd, error.message);
-          await fd.write(Buffer.from(emergencyMarker));
-        }
-        
-        currentPos = chunkEnd;
+      if (currentPos < segmentEnd) {
+        // FIXED: Write available data in chunks to prevent memory/buffer issues
+        await this._writeSegmentInChunks(fd, currentPos, segmentEnd, maxChunkSize);
+        currentPos = segmentEnd;
       } else {
         break;
       }
@@ -1187,6 +1181,52 @@ class PagedBuffer {
       if (lastRange.virtualEnd >= totalSize) {
         const endMarker = this._createEndOfFileMissingMarker(lastRange, totalSize);
         await fd.write(Buffer.from(endMarker));
+      }
+    }
+  }
+
+  /**
+   * Write a segment of data in manageable chunks
+   * @param {fs.FileHandle} fd - File handle to write to
+   * @param {number} startPos - Start position in virtual buffer
+   * @param {number} endPos - End position in virtual buffer  
+   * @param {number} maxChunkSize - Maximum size per chunk
+   * @private
+   */
+  async _writeSegmentInChunks(fd, startPos, endPos, maxChunkSize) {
+    let chunkStart = startPos;
+    
+    while (chunkStart < endPos) {
+      // Calculate this chunk's end (don't exceed segment boundary or max chunk size)
+      const chunkEnd = Math.min(chunkStart + maxChunkSize, endPos);
+      const chunkSize = chunkEnd - chunkStart;
+      
+      try {
+        // Read this chunk from the virtual page manager
+        const chunk = await this.virtualPageManager.readRange(chunkStart, chunkEnd);
+        
+        if (chunk.length > 0) {
+          await fd.write(chunk);
+          
+          // Progress logging for large files
+          if (chunkSize > 1024 * 1024) { // Log for chunks > 1MB
+            const progress = ((chunkEnd - startPos) / (endPos - startPos) * 100).toFixed(1);
+            console.log(`Written ${chunkEnd.toLocaleString()} / ${endPos.toLocaleString()} bytes (${progress}%)`);
+          }
+        }
+        
+      } catch (error) {
+        // Data became unavailable during save - add an emergency marker
+        console.warn(`Data unavailable for chunk ${chunkStart}-${chunkEnd}: ${error.message}`);
+        const emergencyMarker = this._createEmergencyMissingMarker(chunkStart, chunkEnd, error.message);
+        await fd.write(Buffer.from(emergencyMarker));
+      }
+      
+      chunkStart = chunkEnd;
+      
+      // CRITICAL: Yield control periodically to prevent event loop blocking
+      if (chunkStart % (maxChunkSize * 10) === 0) {
+        await new Promise(resolve => setImmediate(resolve));
       }
     }
   }
