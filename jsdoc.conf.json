@@ -13,7 +13,7 @@
     "excludePattern": "\\.(test|spec)\\.js$"
   },
   "opts": {
-    "destination": "./docs/",
+    "destination": "./reference/",
     "recurse": true,
     "readme": "./README.md"
   },

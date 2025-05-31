@@ -1,4 +1,32 @@
-/**
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>JSDoc: Source: utils/operation-distance.js</title>
+
+    <script src="scripts/prettify/prettify.js"> </script>
+    <script src="scripts/prettify/lang-css.js"> </script>
+    <!--[if lt IE 9]>
+      <script src="//html5shiv.googlecode.com/svn/trunk/html5.js"></script>
+    <![endif]-->
+    <link type="text/css" rel="stylesheet" href="styles/prettify-tomorrow.css">
+    <link type="text/css" rel="stylesheet" href="styles/jsdoc-default.css">
+</head>
+
+<body>
+
+<div id="main">
+
+    <h1 class="page-title">Source: utils/operation-distance.js</h1>
+
+    
+
+
+
+    
+    <section>
+        <article>
+            <pre class="prettyprint source linenums"><code>/**
  * @fileoverview Operation Distance Calculator
  * Calculates logical distance between buffer operations for merge decisions
  * @author Jeffrey R. Day
@@ -109,7 +137,7 @@ class OperationDistanceCalculator {
   static calculateDistance(op1, op2, options = {}) {
     // Determine chronological order
     let firstOp, secondOp;
-    if (op1.operationNumber <= op2.operationNumber) {
+    if (op1.operationNumber &lt;= op2.operationNumber) {
       firstOp = op1;
       secondOp = op2;
     } else {
@@ -188,7 +216,7 @@ class OperationDistanceCalculator {
     const insPos = op.position.preExecution;
     
     // Check if insertion point is within or touching the range
-    if (insPos >= range.start && insPos <= range.end) {
+    if (insPos >= range.start &amp;&amp; insPos &lt;= range.end) {
       return 0;
     }
     
@@ -208,9 +236,9 @@ class OperationDistanceCalculator {
     const delEnd = delStart + op.originalDataLength;
     
     // Check if deletion range touches the target range
-    if ((delStart >= range.start && delStart <= range.end) || 
-        (delEnd >= range.start && delEnd <= range.end) ||
-        (delStart <= range.start && delEnd >= range.end)) {
+    if ((delStart >= range.start &amp;&amp; delStart &lt;= range.end) || 
+        (delEnd >= range.start &amp;&amp; delEnd &lt;= range.end) ||
+        (delStart &lt;= range.start &amp;&amp; delEnd >= range.end)) {
       return 0;
     }
     
@@ -233,9 +261,9 @@ class OperationDistanceCalculator {
     const ovEnd = ovStart + op.dataLength;
     
     // Check if overwrite range touches the target range
-    if ((ovStart >= range.start && ovStart <= range.end) || 
-        (ovEnd >= range.start && ovEnd <= range.end) ||
-        (ovStart <= range.start && ovEnd >= range.end)) {
+    if ((ovStart >= range.start &amp;&amp; ovStart &lt;= range.end) || 
+        (ovEnd >= range.start &amp;&amp; ovEnd &lt;= range.end) ||
+        (ovStart &lt;= range.start &amp;&amp; ovEnd >= range.end)) {
       return 0;
     }
     
@@ -278,3 +306,26 @@ module.exports = {
   OperationDescriptor,
   OperationDistanceCalculator
 };
+</code></pre>
+        </article>
+    </section>
+
+
+
+
+</div>
+
+<nav>
+    <h2><a href="index.html">Home</a></h2><h3>Classes</h3><ul><li><a href="BufferNotification.html">BufferNotification</a></li><li><a href="BufferOperation.html">BufferOperation</a></li><li><a href="BufferUndoSystem.html">BufferUndoSystem</a></li><li><a href="FilePageStorage.html">FilePageStorage</a></li><li><a href="MemoryPageStorage.html">MemoryPageStorage</a></li><li><a href="MissingDataRange.html">MissingDataRange</a></li><li><a href="ModificationAnalyzer.html">ModificationAnalyzer</a></li><li><a href="OperationDescriptor.html">OperationDescriptor</a></li><li><a href="OperationDistanceCalculator.html">OperationDistanceCalculator</a></li><li><a href="OperationGroup.html">OperationGroup</a></li><li><a href="OperationPosition.html">OperationPosition</a></li><li><a href="OperationTransaction.html">OperationTransaction</a></li><li><a href="PageAddressIndex.html">PageAddressIndex</a></li><li><a href="PageDescriptor.html">PageDescriptor</a></li><li><a href="PageInfo.html">PageInfo</a></li><li><a href="PageStorage.html">PageStorage</a></li><li><a href="PagedBuffer.html">PagedBuffer</a></li><li><a href="SafeFileWriter.html">SafeFileWriter</a></li><li><a href="SmartStrategySelector.html">SmartStrategySelector</a></li><li><a href="VirtualPageManager.html">VirtualPageManager</a></li></ul><h3>Global</h3><ul><li><a href="global.html#BufferMode">BufferMode</a></li><li><a href="global.html#BufferState">BufferState</a></li><li><a href="global.html#FileChangeStrategy">FileChangeStrategy</a></li><li><a href="global.html#NotificationType">NotificationType</a></li><li><a href="global.html#OperationType">OperationType</a></li><li><a href="global.html#RiskLevel">RiskLevel</a></li><li><a href="global.html#SaveStrategy">SaveStrategy</a></li><li><a href="global.html#crypto">crypto</a></li><li><a href="global.html#fs">fs</a></li><li><a href="global.html#getOperationCounter">getOperationCounter</a></li><li><a href="global.html#globalOperationCounter">globalOperationCounter</a></li><li><a href="global.html#resetOperationCounter">resetOperationCounter</a></li></ul>
+</nav>
+
+<br class="clear">
+
+<footer>
+    Documentation generated by <a href="https://github.com/jsdoc/jsdoc">JSDoc 4.0.4</a> on Sat May 31 2025 16:44:22 GMT-0700 (Pacific Daylight Time)
+</footer>
+
+<script> prettyPrint(); </script>
+<script src="scripts/linenumber.js"> </script>
+</body>
+</html>
