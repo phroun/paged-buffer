@@ -1,6 +1,6 @@
 {
   "name": "@phroun/paged-buffer",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "High-performance buffer system for editing massive files with intelligent memory management and undo/redo capabilities",
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
@@ -38,9 +38,9 @@
     "url": "https://github.com/phroun/paged-buffer.git"
   },
   "bugs": {
-    "url": "https://github.com/your-org/paged-buffer/issues"
+    "url": "https://github.com/phroun/paged-buffer/issues"
   },
-  "homepage": "https://github.com/your-org/paged-buffer#readme",
+  "homepage": "https://github.com/phroun/paged-buffer#readme",
   "engines": {
     "node": ">=14.14.0"
   },

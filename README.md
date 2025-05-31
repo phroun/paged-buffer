@@ -466,6 +466,15 @@ MIT License - see [LICENSE](LICENSE) file for details.
 
 ## Changelog
 
+### 0.1.4
+- Improved documentation
+
+### 0.1.3
+- Solved an issue preventing saving of files larger than 2GB
+
+### 0.1.2
+- Refactored to make the Virtual Page Manager its module with full tests
+
 ### 0.1.0
 - Initial release
 - Core paged buffer functionality with byte-level operations
