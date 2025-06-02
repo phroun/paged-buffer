@@ -4,7 +4,6 @@
  */
 
 const { PagedBuffer } = require('../src/paged-buffer');
-const { BufferMode } = require('../src/types/buffer-types');
 
 describe('PagedBuffer - Merge Window Behavior (Corrected)', () => {
   let buffer;

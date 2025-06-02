@@ -1,9 +1,9 @@
 /**
- * @fileoverview Virtual Page Manager - Efficient address translation and page management
+ * @fileoverview Enhanced Virtual Page Manager with Line Tracking and Marks Integration
  * @description Handles mapping between virtual buffer addresses and physical page locations
- * while maintaining sparse, efficient access to massive files
+ * while maintaining sparse, efficient access to massive files, with comprehensive line and marks support
  * @author Jeffrey R. Day
- * @version 1.0.0
+ * @version 2.0.0
  */
 
 const fs = require('fs').promises;
@@ -30,6 +30,10 @@ class PageDescriptor {
     // Split/merge tracking
     this.generation = 0;                // For tracking split history
     this.parentId = null;               // Original page this came from
+    
+    // Persistent line info (survives eviction)
+    this.newlineCount = 0;              // How many \n characters in this page
+    this.lineInfoCached = false;        // Have we scanned this page for newlines yet?
   }
 
   /**
@@ -54,6 +58,15 @@ class PageDescriptor {
       throw new Error(`Position ${virtualPos} not in page ${this.pageId}`);
     }
     return virtualPos - this.virtualStart;
+  }
+
+  /**
+   * Cache line information from a loaded page
+   * @param {PageInfo} pageInfo - Loaded page info
+   */
+  cacheLineInfo(pageInfo) {
+    this.newlineCount = pageInfo.getNewlineCount();
+    this.lineInfoCached = true;
   }
 }
 
@@ -242,7 +255,7 @@ class PageAddressIndex {
 }
 
 /**
- * Virtual Page Manager - The core address translation system
+ * Enhanced Virtual Page Manager with Line Tracking and Marks Integration
  */
 class VirtualPageManager {
   constructor(buffer, pageSize = 64 * 1024) {
@@ -263,6 +276,17 @@ class VirtualPageManager {
     // Memory management
     this.maxLoadedPages = 100;
     this.lruOrder = [];               // For eviction decisions
+    
+    // Line and Marks Manager will be set by PagedBuffer
+    this.lineAndMarksManager = null;
+  }
+
+  /**
+   * Set the line and marks manager (called by PagedBuffer)
+   * @param {LineAndMarksManager} manager - Line and marks manager instance
+   */
+  setLineAndMarksManager(manager) {
+    this.lineAndMarksManager = manager;
   }
 
   /**
@@ -278,6 +302,11 @@ class VirtualPageManager {
     
     // Create initial page descriptors for the entire file
     this._createInitialPages(fileSize);
+    
+    // Invalidate line caches since we have new content
+    if (this.lineAndMarksManager && this.lineAndMarksManager.invalidateLineCaches) {
+      this.lineAndMarksManager.invalidateLineCaches();
+    }
   }
 
   /**
@@ -307,6 +336,11 @@ class VirtualPageManager {
       
       // Apply memory limit after initialization
       this._applyMemoryLimit();
+      
+      // Invalidate line caches
+      if (this.lineAndMarksManager) {
+        this.lineAndMarksManager.invalidateLineCaches();
+      }
       return;
     }
     
@@ -328,14 +362,23 @@ class VirtualPageManager {
       pageDesc.isLoaded = true;
       
       this.addressIndex.insertPage(pageDesc);
-      this.pageCache.set(pageId, this._createPageInfo(pageDesc, pageData));
+      const pageInfo = this._createPageInfo(pageDesc, pageData);
+      this.pageCache.set(pageId, pageInfo);
       this.loadedPages.add(pageId);
+      
+      // Cache line information immediately for in-memory content
+      pageDesc.cacheLineInfo(pageInfo);
       
       offset += pageSize;
     }
     
     // Apply memory limit after initialization
     this._applyMemoryLimit();
+    
+    // Invalidate line caches since we have new content
+    if (this.lineAndMarksManager) {
+      this.lineAndMarksManager.invalidateLineCaches();
+    }
   }
 
   /**
@@ -420,7 +463,7 @@ class VirtualPageManager {
   }
 
   /**
-   * Insert data at a virtual position
+   * Insert data at a virtual position with line and marks tracking
    * @param {number} virtualPos - Position to insert at
    * @param {Buffer} data - Data to insert
    */
@@ -433,12 +476,24 @@ class VirtualPageManager {
     const after = pageInfo.data.subarray(relativePos);
     const newData = Buffer.concat([before, data, after]);
     
-    // Update page data
-    pageInfo.updateData(newData, this.buffer.mode);
+    // Update page data with line and marks tracking
+    pageInfo.updateData(newData);
+    
+    // Update page-level marks for this modification
+    pageInfo.updateAfterModification(relativePos, 0, data);
+    
     descriptor.isDirty = true;
     
-    // Update virtual addresses
+    // Invalidate cached line info since page content changed
+    descriptor.lineInfoCached = false;
+    
+    // Update virtual addresses in the page index
     this.addressIndex.updatePageSize(descriptor.pageId, data.length);
+    
+    // Update global marks and line tracking
+    if (this.lineAndMarksManager && this.lineAndMarksManager.updateMarksAfterModification) {
+      this.lineAndMarksManager.updateMarksAfterModification(virtualPos, 0, data.length);
+    }
     
     // Check if page needs splitting
     if (newData.length > this.pageSize * 2) {
@@ -449,7 +504,7 @@ class VirtualPageManager {
   }
 
   /**
-   * Delete data from a virtual range
+   * Delete data from a virtual range with line and marks tracking
    * @param {number} startPos - Start position
    * @param {number} endPos - End position
    * @returns {Promise<Buffer>} - Deleted data
@@ -469,6 +524,11 @@ class VirtualPageManager {
     
     const deletedChunks = [];
     const affectedPages = this.addressIndex.getPagesInRange(startPos, endPos);
+    
+    // Update global marks BEFORE deletion
+    if (this.lineAndMarksManager && this.lineAndMarksManager.updateMarksAfterModification) {
+      this.lineAndMarksManager.updateMarksAfterModification(startPos, endPos - startPos, 0);
+    }
     
     // Process pages in reverse order to maintain position consistency
     for (let i = affectedPages.length - 1; i >= 0; i--) {
@@ -493,8 +553,16 @@ class VirtualPageManager {
       const after = pageInfo.data.subarray(relativeEnd);
       const newData = Buffer.concat([before, after]);
       
-      pageInfo.updateData(newData, this.buffer.mode);
+      // Update page data with line and marks tracking
+      pageInfo.updateData(newData);
+      
+      // Update page-level marks for this modification
+      pageInfo.updateAfterModification(relativeStart, relativeEnd - relativeStart, Buffer.alloc(0));
+      
       descriptor.isDirty = true;
+      
+      // Invalidate cached line info since page content changed
+      descriptor.lineInfoCached = false;
       
       // Update virtual size
       const sizeChange = -(relativeEnd - relativeStart);
@@ -580,20 +648,40 @@ class VirtualPageManager {
     const totalPages = this.addressIndex.pages.length;
     const loadedPages = this.loadedPages.size;
     const dirtyPages = this.addressIndex.pages.filter(p => p.isDirty).length;
+    const cachedLineInfoPages = this.addressIndex.pages.filter(p => p.lineInfoCached).length;
     
     let memoryUsed = 0;
+    let linesMemory = 0;
+    let marksMemory = 0;
+    
     for (const pageId of this.loadedPages) {
       const pageInfo = this.pageCache.get(pageId);
       if (pageInfo && pageInfo.data) {
-        memoryUsed += pageInfo.data.length;
+        const pageStats = pageInfo.getMemoryStats();
+        memoryUsed += pageStats.dataSize;
+        linesMemory += pageStats.estimatedMemoryUsed - pageStats.dataSize; // Lines and marks overhead
       }
     }
+    
+    // Add line and marks manager memory
+    if (this.lineAndMarksManager) {
+      const lmStats = this.lineAndMarksManager.getMemoryStats();
+      linesMemory += lmStats.estimatedLinesCacheMemory;
+      marksMemory += lmStats.estimatedMarksMemory;
+    }
+    
+    // Add persistent line info memory (very small)
+    const persistentLineMemory = totalPages * 8; // ~8 bytes per page for line info
     
     return {
       totalPages,
       loadedPages,
       dirtyPages,
+      cachedLineInfoPages,
       memoryUsed,
+      linesMemory,
+      marksMemory,
+      persistentLineMemory,
       virtualSize: this.addressIndex.totalVirtualSize,
       sourceSize: this.sourceSize
     };
@@ -706,6 +794,13 @@ class VirtualPageManager {
     this.loadedPages.add(descriptor.pageId);
     descriptor.isLoaded = true;
     
+    // IMPORTANT: Ensure line cache is built immediately for loaded pages
+    if (!loadError && data.length > 0) {
+      pageInfo.ensureLineCacheValid();
+      // Cache the line info in the page descriptor
+      descriptor.cacheLineInfo(pageInfo);
+    }
+    
     // Update LRU and possibly evict
     this._updateLRU(descriptor.pageId);
     await this._evictIfNeeded();
@@ -765,44 +860,6 @@ class VirtualPageManager {
     } else {
       return 'data_corruption';
     }
-  }
-  
-  
-
-
-  /**  Maybe UNUSED
-   * Handle missing data by notifying the buffer
-   * @private
-   */
-  _handleMissingData(descriptor, reason) {
-    // Import MissingDataRange from the main module
-    const { MissingDataRange } = require('./paged-buffer');
-    
-    const missingRange = new MissingDataRange(
-      descriptor.virtualStart,
-      descriptor.virtualEnd,
-      descriptor.sourceType === 'original' ? descriptor.sourceInfo.fileOffset : null,
-      descriptor.sourceType === 'original' ? 
-        descriptor.sourceInfo.fileOffset + descriptor.sourceInfo.size : null,
-      reason
-    );
-    
-    // Notify buffer of data loss
-    if (this.buffer._markAsDetached) {
-      this.buffer._markAsDetached(`Page data unavailable: ${reason}`, [missingRange]);
-    }
-    
-    this.buffer._notify(
-      'page_data_unavailable',
-      'error',
-      `Page ${descriptor.pageId} data unavailable: ${reason}`,
-      { 
-        pageId: descriptor.pageId,
-        virtualStart: descriptor.virtualStart,
-        virtualEnd: descriptor.virtualEnd,
-        reason 
-      }
-    );
   }
 
   /**
@@ -891,41 +948,17 @@ class VirtualPageManager {
   }
 
   /**
-   * Fix _createPageInfo to handle missing PageInfo import
+   * Create PageInfo with enhanced line and marks support
    */
   _createPageInfo(descriptor, data) {
-    // Try to import PageInfo, fallback to mock if not available
-    let PageInfo;
-    try {
-      PageInfo = require('./utils/page-info').PageInfo;
-    } catch (error) {
-      // Create minimal PageInfo mock for testing
-      PageInfo = class {
-        constructor(pageId, fileOffset, originalSize) {
-          this.pageId = pageId;
-          this.fileOffset = fileOffset;
-          this.originalSize = originalSize;
-          this.currentSize = originalSize;
-          this.data = null;
-          this.isDirty = false;
-          this.isLoaded = false;
-        }
-        
-        updateData(data, mode) {
-          this.data = data;
-          this.currentSize = data.length;
-          this.isDirty = true;
-          this.isLoaded = true;
-        }
-      };
-    }
+    const { PageInfo } = require('./utils/page-info');
     
     const pageInfo = new PageInfo(
       descriptor.pageId,
       descriptor.sourceType === 'original' ? descriptor.sourceInfo.fileOffset : -1,
       descriptor.sourceType === 'original' ? descriptor.sourceInfo.size : 0
     );
-    pageInfo.updateData(data, this.buffer.mode);
+    pageInfo.updateData(data);
     pageInfo.isDirty = descriptor.isDirty;
     pageInfo.isLoaded = true;
     return pageInfo;
@@ -942,6 +975,9 @@ class VirtualPageManager {
     const splitPoint = Math.floor(pageInfo.currentSize / 2);
     const newPageId = this._generatePageId();
     
+    // Extract marks from the second half before splitting
+    const marksInSecondHalf = pageInfo.extractMarksFromRange(splitPoint, pageInfo.currentSize);
+    
     // Split the page in the address index
     const newDescriptor = this.addressIndex.splitPage(
       descriptor.pageId,
@@ -953,15 +989,27 @@ class VirtualPageManager {
     const newData = pageInfo.data.subarray(splitPoint);
     const newPageInfo = this._createPageInfo(newDescriptor, newData);
     
+    // Insert marks into the new page
+    newPageInfo.insertMarksFromRelative(0, marksInSecondHalf, newDescriptor.virtualStart);
+    
     // Update original page data
     const originalData = pageInfo.data.subarray(0, splitPoint);
-    pageInfo.updateData(originalData, this.buffer.mode);
+    pageInfo.updateData(originalData);
+    
+    // Invalidate line info cache for both pages since they changed
+    descriptor.lineInfoCached = false;
+    newDescriptor.lineInfoCached = false;
     
     // Cache the new page
     this.pageCache.set(newPageId, newPageInfo);
     this.loadedPages.add(newPageId);
     
     this._updateLRU(newPageId);
+    
+    // Invalidate line caches after split
+    if (this.lineAndMarksManager && this.lineAndMarksManager.invalidateLineCaches) {
+      this.lineAndMarksManager.invalidateLineCaches();
+    }
     
     this.buffer._notify(
       'page_split',
@@ -991,6 +1039,11 @@ class VirtualPageManager {
           // Ignore deletion errors
         }
       }
+    }
+    
+    // Invalidate line caches after cleanup
+    if (this.lineAndMarksManager && this.lineAndMarksManager.invalidateLineCaches) {
+      this.lineAndMarksManager.invalidateLineCaches();
     }
   }
 
@@ -1022,12 +1075,20 @@ class VirtualPageManager {
   }
 
   /**
-   * Evict a specific page
+   * Evict a specific page with marks preservation and line info caching
    * @private
    */
   async _evictPage(descriptor) {
     const pageInfo = this.pageCache.get(descriptor.pageId);
     if (!pageInfo) return;
+    
+    // IMPORTANT: Cache line information before evicting (if not already cached)
+    if (!descriptor.lineInfoCached) {
+      descriptor.cacheLineInfo(pageInfo);
+    }
+    
+    // IMPORTANT: Don't lose marks when evicting pages
+    // Marks are preserved in the global registry by LineAndMarksManager
     
     // Save to storage if dirty
     if (descriptor.isDirty) {
@@ -1057,7 +1118,7 @@ class VirtualPageManager {
       'page_evicted',
       'debug',
       `Evicted page ${descriptor.pageId}`,
-      { pageId: descriptor.pageId }
+      { pageId: descriptor.pageId, lineInfoCached: descriptor.lineInfoCached }
     );
     
     return true; // Indicate eviction succeeded

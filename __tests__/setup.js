@@ -372,7 +372,6 @@ class TestUtils {
     }
   }
 
-
   /**
    * Force cache invalidation for corruption testing
    * This ensures the VPM will try to read from the source file again
@@ -389,7 +388,7 @@ class TestUtils {
     if (vpm.lruOrder) vpm.lruOrder.length = 0;
     
     // Reset page descriptors
-    if (vpm.addressIndex && vmp.addressIndex.pages) {
+    if (vpm.addressIndex && vpm.addressIndex.pages) {
       for (const descriptor of vpm.addressIndex.pages) {
         if (descriptor.sourceType === 'original') {
           descriptor.isLoaded = false;

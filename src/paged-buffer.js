@@ -1,16 +1,17 @@
 /**
- * @fileoverview PagedBuffer - Enhanced with Detached Buffer System and Refactored State Management
- * @description High-performance buffer with robust data loss tracking and transparent reporting
+ * @fileoverview Enhanced PagedBuffer with comprehensive line tracking and named marks
+ * @description High-performance buffer with line-aware operations and named marks support
  * @author Jeffrey R. Day
- * @version 2.1.0
+ * @version 2.2.0
  */
 
 const fs = require('fs').promises;
 const crypto = require('crypto');
 const path = require('path');
+const { BufferUndoSystem } = require('./undo-system');
+const os = require('os');    
 
 const { 
-  BufferMode, 
   BufferState, 
   FileChangeStrategy 
 } = require('./types/buffer-types');
@@ -19,6 +20,7 @@ const { NotificationType, BufferNotification } = require('./types/notifications'
 const { PageStorage } = require('./storage/page-storage');
 const { MemoryPageStorage } = require('./storage/memory-page-storage');
 const { VirtualPageManager } = require('./virtual-page-manager');
+const { LineAndMarksManager, LineOperationResult, ExtractedContent } = require('./utils/line-marks-manager');
 
 /**
  * Tracks missing data ranges in detached buffers
@@ -36,7 +38,7 @@ class MissingDataRange {
   /**
    * Generate human-readable description of missing data
    */
-  toDescription(mode = BufferMode.BINARY) {
+  toDescription() {
     const sizeDesc = this.size === 1 ? '1 byte' : `${this.size.toLocaleString()} bytes`;
     let desc = `[Missing ${sizeDesc} from buffer addresses ${this.virtualStart.toLocaleString()} to ${this.virtualEnd.toLocaleString()}`;
     
@@ -49,17 +51,14 @@ class MissingDataRange {
     }
     
     desc += '.]';
-    
-    if (mode === BufferMode.UTF8) {
-      desc += '\n';
-    }
+    desc += '\n';
     
     return desc;
   }
 }
 
 /**
- * PagedBuffer - Enhanced with Virtual Page Manager and refactored state management
+ * Enhanced PagedBuffer with comprehensive line tracking and named marks
  */
 class PagedBuffer {
   constructor(pageSize = 64 * 1024, storage = null, maxMemoryPages = 100) {
@@ -67,18 +66,19 @@ class PagedBuffer {
     this.storage = storage || new MemoryPageStorage();
     this.maxMemoryPages = maxMemoryPages;
     
-    // Buffer mode
-    this.mode = BufferMode.BINARY;
-    
     // File metadata
     this.filename = null;
     this.fileSize = 0;
     this.fileMtime = null;
     this.fileChecksum = null;
     
-    // Virtual Page Manager (replaces old page management)
+    // Virtual Page Manager
     this.virtualPageManager = new VirtualPageManager(this, pageSize);
     this.virtualPageManager.maxLoadedPages = maxMemoryPages;
+    
+    // Enhanced Line and Marks Manager
+    this.lineAndMarksManager = new LineAndMarksManager(this.virtualPageManager);
+    this.virtualPageManager.setLineAndMarksManager(this.lineAndMarksManager);
     
     // Virtual file state
     this.totalSize = 0;
@@ -191,31 +191,6 @@ class PagedBuffer {
   }
 
   /**
-   * Detect buffer mode from content
-   * @param {Buffer} sampleData - Sample of file content
-   * @returns {string} - BufferMode.BINARY or BufferMode.UTF8
-   */
-  _detectMode(sampleData) {
-    // Check for null bytes (strong indicator of binary)
-    for (let i = 0; i < Math.min(sampleData.length, 8192); i++) {
-      if (sampleData[i] === 0) {
-        return BufferMode.BINARY;
-      }
-    }
-    
-    // Try to decode as UTF-8
-    try {
-      const text = sampleData.toString('utf8');
-      if (text.includes('\uFFFD')) {
-        return BufferMode.BINARY;
-      }
-      return BufferMode.UTF8;
-    } catch {
-      return BufferMode.BINARY;
-    }
-  }
-
-  /**
    * Add notification callback
    * @param {Function} callback - Callback function for notifications
    */
@@ -246,9 +221,8 @@ class PagedBuffer {
   /**
    * Load a file into the buffer
    * @param {string} filename - Path to the file
-   * @param {string} [mode] - Force specific mode, or auto-detect
    */
-  async loadFile(filename, mode = null) {
+  async loadFile(filename) {
     try {
       const stats = await fs.stat(filename);
       this.filename = filename;
@@ -263,21 +237,6 @@ class PagedBuffer {
       this.missingDataRanges = [];
       this.detachmentReason = null;
       
-      // Detect or set buffer mode
-      if (mode) {
-        this.mode = mode;
-      } else if (stats.size > 0) {
-        const fd = await fs.open(filename, 'r');
-        const sampleBuffer = Buffer.alloc(Math.min(8192, stats.size));
-        await fd.read(sampleBuffer, 0, sampleBuffer.length, 0);
-        await fd.close();
-        
-        this.mode = this._detectMode(sampleBuffer);
-      } else {
-        // Empty file defaults to UTF8
-        this.mode = BufferMode.UTF8;
-      }
-      
       // Calculate file checksum
       this.fileChecksum = await this._calculateFileChecksum(filename);
       
@@ -287,8 +246,8 @@ class PagedBuffer {
       this._notify(
         NotificationType.FILE_MODIFIED_ON_DISK,
         'info',
-        `Loaded file in ${this.mode} mode`,
-        { filename, mode: this.mode, size: stats.size, state: this.state, hasUnsavedChanges: this.hasUnsavedChanges }
+        `Loaded file`,
+        { filename, size: stats.size, state: this.state, hasUnsavedChanges: this.hasUnsavedChanges }
       );
       
     } catch (error) {
@@ -302,7 +261,6 @@ class PagedBuffer {
   loadContent(content) {
     this.filename = null;
     this.totalSize = Buffer.byteLength(content, 'utf8');
-    this.mode = BufferMode.UTF8;
     
     // Clear any previous state
     this.state = BufferState.CLEAN;
@@ -317,8 +275,8 @@ class PagedBuffer {
     this._notify(
       'buffer_content_loaded',
       'info',
-      `Loaded content in ${this.mode} mode`,
-      { mode: this.mode, size: this.totalSize, state: this.state, hasUnsavedChanges: this.hasUnsavedChanges }
+      `Loaded content`,
+      { size: this.totalSize, state: this.state, hasUnsavedChanges: this.hasUnsavedChanges }
     );
   }
 
@@ -328,7 +286,6 @@ class PagedBuffer {
   loadBinaryContent(content) {
     this.filename = null;
     this.totalSize = content.length;
-    this.mode = BufferMode.BINARY;
     
     // Clear any previous state
     this.state = BufferState.CLEAN;
@@ -343,7 +300,7 @@ class PagedBuffer {
       'buffer_content_loaded',
       'info',
       `Loaded binary content`,
-      { mode: this.mode, size: this.totalSize, state: this.state, hasUnsavedChanges: this.hasUnsavedChanges }
+      { size: this.totalSize, state: this.state, hasUnsavedChanges: this.hasUnsavedChanges }
     );
   }
 
@@ -412,44 +369,50 @@ class PagedBuffer {
     }
   }
 
-  // =================== CORE BYTE OPERATIONS (Enhanced with VPM) ===================
+  // =================== CORE BYTE OPERATIONS WITH MARKS SUPPORT ===================
 
   /**
-   * Get bytes from absolute position with detachment detection
+   * Get bytes from absolute position with optional marks extraction
    * @param {number} start - Start byte position
    * @param {number} end - End byte position
-   * @returns {Promise<Buffer>} - Data
+   * @param {boolean} includeMarks - Whether to include marks in result
+   * @returns {Promise<Buffer|ExtractedContent>} - Data or data with marks
    */
-  async getBytes(start, end) {
+  async getBytes(start, end, includeMarks = false) {
     if (start < 0 || end < 0) {
       throw new Error('Invalid range: positions cannot be negative');
     }
     if (start > end) {
-      return Buffer.alloc(0);
+      return includeMarks ? new ExtractedContent(Buffer.alloc(0), []) : Buffer.alloc(0);
     }
     if (start >= this.totalSize) {
-      return Buffer.alloc(0);
+      return includeMarks ? new ExtractedContent(Buffer.alloc(0), []) : Buffer.alloc(0);
     }
     if (end > this.totalSize) {
       end = this.totalSize;
     }
     
     try {
-      return await this.virtualPageManager.readRange(start, end);
+      if (includeMarks) {
+        return await this.lineAndMarksManager.getBytesWithMarks(start, end, true);
+      } else {
+        return await this.virtualPageManager.readRange(start, end);
+      }
     } catch (error) {
       // CRITICAL: If VPM fails to read data, this triggers detachment
       // The VPM should have already called _markAsDetached through _handleCorruption
       // So we just return empty buffer here
-      return Buffer.alloc(0);
+      return includeMarks ? new ExtractedContent(Buffer.alloc(0), []) : Buffer.alloc(0);
     }
   }
 
   /**
-   * Insert bytes at absolute position
+   * Insert bytes at absolute position with optional marks
    * @param {number} position - Insertion position
    * @param {Buffer} data - Data to insert
+   * @param {Array<{name: string, relativeOffset: number}>} marks - Marks to insert
    */
-  async insertBytes(position, data) {
+  async insertBytes(position, data, marks = []) {
     if (position < 0) {
       throw new Error('Invalid position: cannot be negative');
     }
@@ -462,11 +425,19 @@ class PagedBuffer {
     const originalData = Buffer.from(data);
     const timestamp = this.undoSystem ? this.undoSystem.getClock() : Date.now();
 
-    // Use Virtual Page Manager for insertion
-    const sizeChange = await this.virtualPageManager.insertAt(position, data);
+    // Use enhanced VPM for insertion with marks support
+    if (marks.length > 0) {
+      await this.lineAndMarksManager.insertBytesWithMarks(position, data, marks);
+    } else {
+      await this.virtualPageManager.insertAt(position, data);
+      // Update marks and lines manually if no marks provided
+      if (this.lineAndMarksManager && this.lineAndMarksManager.updateMarksAfterModification) {
+        this.lineAndMarksManager.updateMarksAfterModification(position, 0, data.length);
+      }
+    }
     
     // Update buffer state
-    this.totalSize += sizeChange;
+    this.totalSize += data.length;
     this._markAsModified();
     
     // Record the operation AFTER executing it
@@ -476,9 +447,13 @@ class PagedBuffer {
   }
 
   /**
-   * Enhanced deleteBytes with proper state transition
+   * Enhanced deleteBytes with marks extraction
+   * @param {number} start - Start position
+   * @param {number} end - End position
+   * @param {boolean} extractMarks - Whether to extract marks from deleted content
+   * @returns {Promise<Buffer|ExtractedContent>} - Deleted data with optional marks
    */
-  async deleteBytes(start, end) {
+  async deleteBytes(start, end, extractMarks = false) {
     if (start < 0 || end < 0) {
       throw new Error('Invalid range: positions cannot be negative');  
     }
@@ -486,7 +461,7 @@ class PagedBuffer {
       throw new Error('Invalid range: start position must be less than or equal to end position');
     }
     if (start >= this.totalSize) {
-      return Buffer.alloc(0);
+      return extractMarks ? new ExtractedContent(Buffer.alloc(0), []) : Buffer.alloc(0);
     }
     if (end > this.totalSize) {
       end = this.totalSize;
@@ -496,25 +471,53 @@ class PagedBuffer {
     const originalStart = start;
     const timestamp = this.undoSystem ? this.undoSystem.getClock() : Date.now();
 
-    // Use Virtual Page Manager for deletion
-    const deletedData = await this.virtualPageManager.deleteRange(start, end);
+    let deletedData;
     
-    // Update buffer state
-    this.totalSize -= deletedData.length;
-    this._markAsModified();
-    
-    // Record the operation AFTER executing it
-    if (this.undoSystem) {
-      this.undoSystem.recordDelete(originalStart, deletedData, timestamp);
+    if (extractMarks) {
+      // Use enhanced deletion with marks extraction
+      const result = await this.lineAndMarksManager.deleteBytesWithMarks(start, end);
+      deletedData = result.data;
+      
+      // Update buffer state
+      this.totalSize -= deletedData.length;
+      this._markAsModified();
+      
+      // Record the operation AFTER executing it
+      if (this.undoSystem) {
+        this.undoSystem.recordDelete(originalStart, deletedData, timestamp);
+      }
+      
+      return result;
+    } else {
+      // Use standard VPM deletion
+      deletedData = await this.virtualPageManager.deleteRange(start, end);
+      
+      // Update marks and lines
+      if (this.lineAndMarksManager && this.lineAndMarksManager.updateMarksAfterModification) {
+        this.lineAndMarksManager.updateMarksAfterModification(start, end - start, 0);
+      }
+      
+      // Update buffer state
+      this.totalSize -= deletedData.length;
+      this._markAsModified();
+      
+      // Record the operation AFTER executing it
+      if (this.undoSystem) {
+        this.undoSystem.recordDelete(originalStart, deletedData, timestamp);
+      }
+      
+      return deletedData;
     }
-    
-    return deletedData;
   }
 
   /**
-   * Enhanced overwriteBytes with proper state transition
+   * Enhanced overwriteBytes with marks support
+   * @param {number} position - Overwrite position
+   * @param {Buffer} data - New data
+   * @param {Array<{name: string, relativeOffset: number}>} marks - Marks to insert
+   * @returns {Promise<Buffer|ExtractedContent>} - Overwritten data with optional marks
    */
-  async overwriteBytes(position, data) {
+  async overwriteBytes(position, data, marks = []) {
     if (position < 0) {
       throw new Error('Invalid position: cannot be negative');
     }
@@ -527,90 +530,116 @@ class PagedBuffer {
     const originalData = Buffer.from(data);
     const timestamp = this.undoSystem ? this.undoSystem.getClock() : Date.now();
 
-    const endPos = Math.min(position + data.length, this.totalSize);
-    const overwrittenData = await this.getBytes(position, endPos);
+    let overwrittenData;
     
-    // Disable undo recording temporarily for delete/insert operations
-    const undoSystem = this.undoSystem;
-    this.undoSystem = null;
-    
-    try {
-      // Perform the overwrite as delete + insert but without recording
-      await this.deleteBytes(position, endPos);
-      await this.insertBytes(position, data);
-    } finally {
-      // Restore undo system
-      this.undoSystem = undoSystem;
+    if (marks.length > 0) {
+      // Use enhanced overwrite with marks
+      const result = await this.lineAndMarksManager.overwriteBytesWithMarks(position, data, marks);
+      overwrittenData = result.data;
+      
+      // Record the operation AFTER executing it
+      if (this.undoSystem) {
+        this.undoSystem.recordOverwrite(originalPosition, originalData, overwrittenData, timestamp);
+      }
+      
+      return result;
+    } else {
+      // Standard overwrite
+      const endPos = Math.min(position + data.length, this.totalSize);
+      overwrittenData = await this.getBytes(position, endPos);
+      
+      // Disable undo recording temporarily for delete/insert operations
+      const undoSystem = this.undoSystem;
+      this.undoSystem = null;
+      
+      try {
+        // Perform the overwrite as delete + insert but without recording
+        await this.deleteBytes(position, endPos);
+        await this.insertBytes(position, data);
+      } finally {
+        // Restore undo system
+        this.undoSystem = undoSystem;
+      }
+      
+      // Record the operation AFTER executing it
+      if (this.undoSystem) {
+        this.undoSystem.recordOverwrite(originalPosition, originalData, overwrittenData, timestamp);
+      }
+      
+      return overwrittenData;
     }
-    
-    // The delete/insert operations above already marked as modified
-    
-    // Record the operation AFTER executing it
-    if (this.undoSystem) {
-      this.undoSystem.recordOverwrite(originalPosition, originalData, overwrittenData, timestamp);
-    }
-    
-    return overwrittenData;
   }
 
-  // =================== MINIMAL LINE INFORMATION API ===================
+  // =================== LINE OPERATIONS API ===================
 
   /**
-   * Get line start positions (byte offsets) for UTF-8 files
+   * Get total number of lines in the buffer
+   * @returns {Promise<number>} - Total line count
+   */
+  async getLineCount() {
+    return await this.lineAndMarksManager.getTotalLineCount();
+  }
+
+  /**
+   * Get line start positions (byte offsets)
    * @returns {Promise<number[]>} - Array of byte positions where each line starts
    */
   async getLineStarts() {
-    if (this.mode !== BufferMode.UTF8) {
-      return [0];
-    }
-
-    const lineStarts = [0];
-    const totalSize = this.getTotalSize();
-    
-    if (totalSize === 0) {
-      return lineStarts;
-    }
-
-    const chunkSize = 64 * 1024;
-
-    for (let pos = 0; pos < totalSize; pos += chunkSize) {
-      const endPos = Math.min(pos + chunkSize, totalSize);
-      const chunk = await this.getBytes(pos, endPos);
-      
-      for (let i = 0; i < chunk.length; i++) {
-        if (chunk[i] === 0x0A) {
-          const nextLineStart = pos + i + 1;
-          lineStarts.push(nextLineStart);
-        }
-      }
-    }
-
-    return lineStarts;
+    return await this.lineAndMarksManager.getLineStarts();
   }
 
   /**
-   * Get total line count
-   * @returns {Promise<number>} - Number of lines
+   * Get information about a specific line
+   * @param {number} lineNumber - Line number (1-based)
+   * @returns {Promise<LineOperationResult|null>} - Line info or null if not found
    */
-  async getLineCount() {
-    const lineStarts = await this.getLineStarts();
-    return lineStarts.length;
+  async getLineInfo(lineNumber) {
+    return await this.lineAndMarksManager.getLineInfo(lineNumber);
+  }
+
+  /**
+   * Get information about multiple lines at once
+   * @param {number} startLine - Start line number (1-based, inclusive)
+   * @param {number} endLine - End line number (1-based, inclusive)
+   * @returns {Promise<LineOperationResult[]>} - Array of line info
+   */
+  async getMultipleLines(startLine, endLine) {
+    return await this.lineAndMarksManager.getMultipleLines(startLine, endLine);
+  }
+
+  /**
+   * Get line start addresses for a range of lines
+   * @param {number} startLine - Start line number (1-based)
+   * @param {number} endLine - End line number (1-based, inclusive)
+   * @returns {Promise<number[]>} - Array of start addresses
+   */
+  async getLineAddresses(startLine, endLine) {
+    return await this.lineAndMarksManager.getLineAddresses(startLine, endLine);
+  }
+
+  /**
+   * Convert byte address to line number
+   * @param {number} byteAddress - Byte address in buffer
+   * @returns {Promise<number>} - Line number (1-based) or 0 if invalid
+   */
+  async getLineNumberFromAddress(byteAddress) {
+    return await this.lineAndMarksManager.getLineNumberFromAddress(byteAddress);
   }
 
   /**
    * Convert line/character position to absolute byte position
-   * @param {Object} pos - {line, character}
+   * @param {Object} pos - {line, character} (both 1-based)
    * @param {number[]} lineStarts - Cached line starts (optional)
    * @returns {Promise<number>} - Absolute byte position
    */
-  async lineCharToBytePosition({line, character}, lineStarts = null) {
-    if (this.mode !== BufferMode.UTF8) {
-      throw new Error('Line/character positioning only available in UTF-8 mode');
-    }
-
+  async lineCharToBytePosition(pos, lineStarts = null) {
     if (!lineStarts) {
       lineStarts = await this.getLineStarts();
     }
+
+    // Convert 1-based to 0-based for internal calculations
+    const line = pos.line - 1;
+    const character = pos.character - 1;
 
     if (line >= lineStarts.length) {
       return this.getTotalSize();
@@ -618,7 +647,7 @@ class PagedBuffer {
 
     const lineStartByte = lineStarts[line];
     
-    if (character === 0) {
+    if (character <= 0) {
       return lineStartByte;
     }
 
@@ -648,40 +677,29 @@ class PagedBuffer {
    * Convert absolute byte position to line/character position
    * @param {number} bytePos - Absolute byte position
    * @param {number[]} lineStarts - Cached line starts (optional)
-   * @returns {Promise<Object>} - {line, character}
+   * @returns {Promise<Object>} - {line, character} (both 1-based)
    */
   async byteToLineCharPosition(bytePos, lineStarts = null) {
-    if (this.mode !== BufferMode.UTF8) {
-      throw new Error('Line/character positioning only available in UTF-8 mode');
+    const lineNumber = await this.getLineNumberFromAddress(bytePos);
+    
+    if (lineNumber === 0) {
+      return { line: 1, character: 1 };
     }
 
     if (!lineStarts) {
       lineStarts = await this.getLineStarts();
     }
 
-    let left = 0;
-    let right = lineStarts.length - 1;
-    
-    while (left < right) {
-      const mid = Math.floor((left + right + 1) / 2);
-      if (lineStarts[mid] <= bytePos) {
-        left = mid;
-      } else {
-        right = mid - 1;
-      }
-    }
-
-    const line = left;
-    const lineStartByte = lineStarts[line];
+    const lineStartByte = lineStarts[lineNumber - 1]; // Convert to 0-based
     const byteOffsetInLine = bytePos - lineStartByte;
     
     if (byteOffsetInLine === 0) {
-      return {line, character: 0};
+      return { line: lineNumber, character: 1 };
     }
 
     let lineEndByte;
-    if (line + 1 < lineStarts.length) {
-      lineEndByte = lineStarts[line + 1] - 1;
+    if (lineNumber < lineStarts.length) {
+      lineEndByte = lineStarts[lineNumber] - 1;
     } else {
       lineEndByte = this.getTotalSize();
     }
@@ -689,18 +707,67 @@ class PagedBuffer {
     if (bytePos >= lineEndByte) {
       const lineBytes = await this.getBytes(lineStartByte, lineEndByte);
       const lineText = lineBytes.toString('utf8');
-      return {line, character: lineText.length};
+      return { line: lineNumber, character: lineText.length + 1 };
     }
 
     const lineBytes = await this.getBytes(lineStartByte, Math.min(lineStartByte + byteOffsetInLine, lineEndByte));
     const partialText = lineBytes.toString('utf8');
     
-    return {line, character: partialText.length};
+    return { line: lineNumber, character: partialText.length + 1 };
+  }
+
+  // =================== NAMED MARKS API ===================
+
+  /**
+   * Set a named mark at a byte address
+   * @param {string} markName - Name of the mark
+   * @param {number} byteAddress - Byte address in buffer
+   */
+  setMark(markName, byteAddress) {
+    this.lineAndMarksManager.setMark(markName, byteAddress);
   }
 
   /**
+   * Get the byte address of a named mark
+   * @param {string} markName - Name of the mark
+   * @returns {number|null} - Byte address or null if not found
+   */
+  getMark(markName) {
+    return this.lineAndMarksManager.getMark(markName);
+  }
+
+  /**
+   * Remove a named mark
+   * @param {string} markName - Name of the mark
+   * @returns {boolean} - True if mark was found and removed
+   */
+  removeMark(markName) {
+    return this.lineAndMarksManager.removeMark(markName);
+  }
+
+  /**
+   * Get all marks between two byte addresses
+   * @param {number} startAddress - Start address (inclusive)
+   * @param {number} endAddress - End address (inclusive)
+   * @returns {Array<{name: string, address: number}>} - Marks in range
+   */
+  getMarksInRange(startAddress, endAddress) {
+    return this.lineAndMarksManager.getMarksInRange(startAddress, endAddress);
+  }
+
+  /**
+   * Get all marks in the buffer
+   * @returns {Array<{name: string, address: number}>} - All marks
+   */
+  getAllMarks() {
+    return this.lineAndMarksManager.getAllMarks();
+  }
+
+  // =================== CONVENIENCE LINE METHODS ===================
+
+  /**
    * Insert content with line/character position (convenience method)
-   * @param {Object} pos - {line, character}
+   * @param {Object} pos - {line, character} (both 1-based)
    * @param {string} text - Text to insert
    * @param {number[]} lineStarts - Cached line starts (optional)
    * @returns {Promise<{newPosition: Object, newLineStarts: number[]}>}
@@ -719,13 +786,13 @@ class PagedBuffer {
     const newBytePos = bytePos + textBuffer.length;
     const newPosition = await this.byteToLineCharPosition(newBytePos, newLineStarts);
     
-    return {newPosition, newLineStarts};
+    return { newPosition, newLineStarts };
   }
 
   /**
    * Delete content between line/character positions (convenience method)
-   * @param {Object} startPos - {line, character}
-   * @param {Object} endPos - {line, character}
+   * @param {Object} startPos - {line, character} (both 1-based)
+   * @param {Object} endPos - {line, character} (both 1-based)
    * @param {number[]} lineStarts - Cached line starts (optional)
    * @returns {Promise<{deletedText: string, newLineStarts: number[]}>}
    */
@@ -742,7 +809,7 @@ class PagedBuffer {
     
     const newLineStarts = await this.getLineStarts();
     
-    return {deletedText, newLineStarts};
+    return { deletedText, newLineStarts };
   }
 
   // =================== UNDO/REDO SYSTEM ===================
@@ -753,7 +820,6 @@ class PagedBuffer {
    */
   enableUndo(config = {}) {
     if (!this.undoSystem) {
-      const { BufferUndoSystem } = require('./undo-system');
       this.undoSystem = new BufferUndoSystem(this, config.maxUndoLevels);
       if (config) {
         this.undoSystem.configure(config);
@@ -911,25 +977,17 @@ class PagedBuffer {
       isCorrupted: this.state === BufferState.CORRUPTED,
       missingDataRanges: this.missingDataRanges.length,
       totalSize: this.getTotalSize(),
-      filename: this.filename,
-      mode: this.mode
+      filename: this.filename
     };
   }
 
   /**
-   * Get buffer mode
-   * @returns {string} - Buffer mode
-   */
-  getMode() {
-    return this.mode;
-  }
-
-  /**
-   * Get memory usage stats
+   * Get enhanced memory usage stats with line and marks information
    * @returns {Object} - Memory statistics
    */
   getMemoryStats() {
     const vpmStats = this.virtualPageManager.getMemoryStats();
+    const lmStats = this.lineAndMarksManager.getMemoryStats();
     
     const undoStats = this.undoSystem ? this.undoSystem.getStats() : {
       undoGroups: 0,
@@ -945,14 +1003,20 @@ class PagedBuffer {
       totalPages: vpmStats.totalPages,
       loadedPages: vpmStats.loadedPages,
       dirtyPages: vpmStats.dirtyPages,
-      detachedPages: 0, // VPM handles this differently
+      detachedPages: 0, // Enhanced VPM handles this differently
       memoryUsed: vpmStats.memoryUsed,
       maxMemoryPages: this.maxMemoryPages,
+      
+      // Line and marks stats
+      totalLines: lmStats.totalLines,
+      globalMarksCount: lmStats.globalMarksCount,
+      linesMemory: vpmStats.linesMemory + lmStats.estimatedLinesCacheMemory,
+      marksMemory: vpmStats.marksMemory + lmStats.estimatedMarksMemory,
+      lineStartsCacheValid: lmStats.lineStartsCacheValid,
       
       // Buffer stats
       state: this.state,
       hasUnsavedChanges: this.hasUnsavedChanges,
-      mode: this.mode,
       virtualSize: vpmStats.virtualSize,
       sourceSize: vpmStats.sourceSize,
       
@@ -1020,19 +1084,15 @@ class PagedBuffer {
     }
     
     let summary = '';
-    const header = this.mode === BufferMode.UTF8 ? 
-      '--- MISSING DATA SUMMARY ---\n' : 
-      '--- MISSING DATA SUMMARY ---\n';
+    const header = '--- MISSING DATA SUMMARY ---\n';
     
     summary += header;
     
     for (const range of this.missingDataRanges) {
-      summary += range.toDescription(this.mode);
+      summary += range.toDescription();
     }
     
-    const footer = this.mode === BufferMode.UTF8 ? 
-      '--- END MISSING DATA ---\n\n' : 
-      '--- END MISSING DATA ---\n\n';
+    const footer = '--- END MISSING DATA ---\n\n';
     
     summary += footer;
     
@@ -1044,7 +1104,7 @@ class PagedBuffer {
    * @private
    */
   _createMissingDataMarker(missingRange) {
-    const nl = '\n'; // Use newlines even for binary for readability
+    const nl = '\n'; // Use newlines for readability
     
     let marker = `${nl}--- MISSING ${missingRange.size.toLocaleString()} BYTES `;
     marker += `FROM BUFFER ADDRESS ${missingRange.virtualStart.toLocaleString()} `;
@@ -1389,9 +1449,6 @@ class PagedBuffer {
    * Create a temporary copy of the original file
    */
   async _createTempCopy(originalPath) {
-    const fs = require('fs').promises;
-    const os = require('os');
-    
     const tempDir = os.tmpdir();
     const baseName = path.basename(originalPath);
     const tempName = `paged-buffer-${Date.now()}-${Math.random().toString(36).substr(2, 9)}-${baseName}`;
@@ -1421,7 +1478,6 @@ class PagedBuffer {
    */
   async _cleanupTempCopy(tempPath) {
     try {
-      const fs = require('fs').promises;
       await fs.unlink(tempPath);
       
       this._notify(
@@ -1445,8 +1501,6 @@ class PagedBuffer {
    * Update metadata after successful save
    */
   async _updateMetadataAfterSave(filename) {
-    const fs = require('fs').promises;
-    
     try {
       const stats = await fs.stat(filename);
       this.filename = filename;
@@ -1492,7 +1546,6 @@ class PagedBuffer {
    */
   async _fileExists(filePath) {
     try {
-      const fs = require('fs').promises;
       await fs.access(filePath);
       return true;
     } catch {

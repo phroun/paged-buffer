@@ -8,7 +8,7 @@ const fs = require('fs').promises;
 const path = require('path');
 const { PagedBuffer } = require('../src/paged-buffer');
 const { FilePageStorage } = require('../src/storage/file-page-storage');
-const { BufferMode, BufferState } = require('../src/types/buffer-types');
+const { BufferState } = require('../src/types/buffer-types');
 const { testUtils } = require('./setup');
 
 jest.setTimeout(15000);
@@ -33,7 +33,6 @@ describe('File Operations', () => {
       
       expect(buffer.filename).toBe(filePath);
       expect(buffer.getTotalSize()).toBe(content.length);
-      expect(buffer.getMode()).toBe(BufferMode.UTF8);
       expect(buffer.getState()).toBe(BufferState.CLEAN); // check
       expect(buffer.hasChanges()).toBe(false);
       
@@ -47,7 +46,6 @@ describe('File Operations', () => {
       
       await buffer.loadFile(filePath);
       
-      expect(buffer.getMode()).toBe(BufferMode.BINARY);
       expect(buffer.getTotalSize()).toBe(binaryData.length);
       
       const loadedData = await buffer.getBytes(0, buffer.getTotalSize());
@@ -60,7 +58,6 @@ describe('File Operations', () => {
       await buffer.loadFile(filePath);
       
       expect(buffer.getTotalSize()).toBe(0);
-      expect(buffer.getMode()).toBe(BufferMode.UTF8); // Empty files default to UTF8
       expect(buffer.getState()).toBe(BufferState.CLEAN); // check
       expect(buffer.hasChanges()).toBe(false);
     });
@@ -71,7 +68,6 @@ describe('File Operations', () => {
       
       await buffer.loadFile(filePath);
       
-      expect(buffer.getMode()).toBe(BufferMode.UTF8);
       expect(buffer.getTotalSize()).toBe(Buffer.byteLength(content, 'utf8'));
       
       const loadedContent = await buffer.getBytes(0, buffer.getTotalSize());
@@ -110,17 +106,6 @@ describe('File Operations', () => {
       const nonExistentPath = '/path/that/does/not/exist.txt';
       
       await expect(buffer.loadFile(nonExistentPath)).rejects.toThrow('Failed to load file');
-    });
-
-    test('should force specific mode when provided', async () => {
-      const content = 'Text content';
-      const filePath = await testUtils.createTempFile(content);
-      
-      // Force binary mode on text file
-      await buffer.loadFile(filePath, BufferMode.BINARY);
-      
-      expect(buffer.getMode()).toBe(BufferMode.BINARY);
-      expect(buffer.getTotalSize()).toBe(content.length);
     });
   });
 
@@ -376,7 +361,6 @@ describe('File Operations', () => {
       
       expect(buffer.filename).toBeNull();
       expect(buffer.getTotalSize()).toBe(Buffer.byteLength(content));
-      expect(buffer.getMode()).toBe(BufferMode.UTF8);
       expect(buffer.getState()).toBe(BufferState.CLEAN); // check
       expect(buffer.hasChanges()).toBe(false);
       
@@ -391,7 +375,6 @@ describe('File Operations', () => {
       
       expect(buffer.filename).toBeNull();
       expect(buffer.getTotalSize()).toBe(binaryData.length);
-      expect(buffer.getMode()).toBe(BufferMode.BINARY);
       expect(buffer.getState()).toBe(BufferState.CLEAN); // check
       expect(buffer.hasChanges()).toBe(false);
       
@@ -403,7 +386,6 @@ describe('File Operations', () => {
       buffer.loadContent('');
       
       expect(buffer.getTotalSize()).toBe(0);
-      expect(buffer.getMode()).toBe(BufferMode.UTF8);
       expect(buffer.getState()).toBe(BufferState.CLEAN); // check
       expect(buffer.hasChanges()).toBe(false);
     });
@@ -412,7 +394,6 @@ describe('File Operations', () => {
       buffer.loadBinaryContent(Buffer.alloc(0));
       
       expect(buffer.getTotalSize()).toBe(0);
-      expect(buffer.getMode()).toBe(BufferMode.BINARY);
       expect(buffer.getState()).toBe(BufferState.CLEAN); // check
       expect(buffer.hasChanges()).toBe(false);
     });
@@ -502,7 +483,6 @@ describe('File Operations', () => {
       const notification = notifications[0];
       expect(notification.severity).toBe('info');
       expect(notification.metadata.filename).toBe(filePath);
-      expect(notification.metadata.mode).toBe(BufferMode.UTF8);
     });
 
     test('should notify when content is loaded', async () => {
@@ -516,7 +496,6 @@ describe('File Operations', () => {
       
       const notification = notifications[0];
       expect(notification.severity).toBe('info');
-      expect(notification.metadata.mode).toBe(BufferMode.UTF8);
     });
 
     test('should handle notification callback errors gracefully', async () => {

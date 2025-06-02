@@ -2,7 +2,7 @@
  * Integration Tests for Massive Files - Corrected to match design specifications
  */
 
-const { PagedBuffer, FilePageStorage, MemoryPageStorage, BufferMode } = require('../../src');
+const { PagedBuffer, FilePageStorage, MemoryPageStorage } = require('../../src');
 const { testUtils } = require('../setup');
 jest.setTimeout(60000);
 
@@ -38,18 +38,7 @@ describe('Massive File Integration Tests', () => {
       
       await buffer.loadFile(filePath);
       
-      expect(buffer.getMode()).toBe(BufferMode.UTF8);
       expect(buffer.getTotalSize()).toBe(Buffer.byteLength(content, 'utf8'));
-    });
-
-    test('should detect binary files correctly', async () => {
-      const binaryData = testUtils.generateTestData('binary', 10 * 1024 * 1024);
-      const filePath = await testUtils.createTempFile(binaryData);
-      
-      await buffer.loadFile(filePath);
-      
-      expect(buffer.getMode()).toBe(BufferMode.BINARY);
-      expect(buffer.getTotalSize()).toBe(binaryData.length);
     });
   });
 

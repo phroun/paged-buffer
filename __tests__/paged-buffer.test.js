@@ -2,7 +2,7 @@
  * PagedBuffer Core Functionality Tests - Updated for VPM Architecture
  */
 
-const { PagedBuffer, FilePageStorage, MemoryPageStorage, BufferState, BufferMode } = require('../src');
+const { PagedBuffer, FilePageStorage, MemoryPageStorage, BufferState } = require('../src');
 const { testUtils } = require('./setup');
 jest.setTimeout(10000);
 
@@ -34,7 +34,6 @@ describe('PagedBuffer Core Functionality', () => {
       expect(buffer.getTotalSize()).toBe(0);
       expect(buffer.getState()).toBe(BufferState.CLEAN); // check
       expect(buffer.hasChanges()).toBe(false); // check
-      expect(buffer.getMode()).toBe(BufferMode.BINARY);
     });
   });
 
@@ -46,7 +45,6 @@ describe('PagedBuffer Core Functionality', () => {
       expect(buffer.getTotalSize()).toBe(Buffer.byteLength(content, 'utf8'));
       expect(buffer.getState()).toBe(BufferState.CLEAN); // check
       expect(buffer.hasChanges()).toBe(false); // check
-      expect(buffer.getMode()).toBe(BufferMode.UTF8);
     });
 
     test('should load file content correctly', async () => {
@@ -56,27 +54,7 @@ describe('PagedBuffer Core Functionality', () => {
       await buffer.loadFile(filePath);
       
       expect(buffer.getTotalSize()).toBe(Buffer.byteLength(content, 'utf8'));
-      expect(buffer.getMode()).toBe(BufferMode.UTF8);
       expect(buffer.filename).toBe(filePath);
-    });
-
-    test('should detect binary files correctly', async () => {
-      const binaryContent = Buffer.from([0x00, 0x01, 0x02, 0xFF, 0xFE]);
-      const filePath = await testUtils.createTempFile(binaryContent);
-      
-      await buffer.loadFile(filePath);
-      
-      expect(buffer.getMode()).toBe(BufferMode.BINARY);
-      expect(buffer.getTotalSize()).toBe(binaryContent.length);
-    });
-
-    test('should force specific mode when requested', async () => {
-      const content = 'This looks like text';
-      const filePath = await testUtils.createTempFile(content);
-      
-      await buffer.loadFile(filePath, BufferMode.BINARY);
-      
-      expect(buffer.getMode()).toBe(BufferMode.BINARY);
     });
 
     test('should handle empty files', async () => {
@@ -306,7 +284,6 @@ describe('PagedBuffer Core Functionality', () => {
       expect(stats).toHaveProperty('dirtyPages');
       expect(stats).toHaveProperty('memoryUsed');
       expect(stats).toHaveProperty('state');
-      expect(stats).toHaveProperty('mode');
       
       expect(stats.totalPages).toBeGreaterThan(0);
       expect(stats.loadedPages).toBeGreaterThan(0);

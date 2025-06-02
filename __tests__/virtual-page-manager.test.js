@@ -9,7 +9,6 @@ const os = require('os');
 
 // Mock the buffer dependencies since we're testing in isolation
 const mockBuffer = {
-  mode: 'utf8',
   storage: {
     savePage: jest.fn().mockResolvedValue(undefined),
     loadPage: jest.fn().mockImplementation((pageId) => {
@@ -18,33 +17,10 @@ const mockBuffer = {
     }),
     deletePage: jest.fn().mockResolvedValue(undefined)
   },
-  _notify: jest.fn()
+  _notify: jest.fn(),
+  _markAsDetached: jest.fn(),
+  getTotalSize: jest.fn().mockReturnValue(0)
 };
-
-// Mock PageInfo since we need it for compatibility
-const MockPageInfo = jest.fn().mockImplementation((pageId, fileOffset, originalSize) => {
-  const instance = {
-    pageId,
-    fileOffset,
-    originalSize,
-    currentSize: originalSize,
-    data: null,
-    isDirty: false,
-    isLoaded: false,
-    updateData: jest.fn().mockImplementation(function(data, mode) {
-      this.data = data;
-      this.currentSize = data.length;
-      this.isDirty = true;
-      this.isLoaded = true;
-    })
-  };
-  return instance;
-});
-
-// Mock the PageInfo module
-jest.mock('../src/utils/page-info', () => ({
-  PageInfo: MockPageInfo
-}));
 
 const { VirtualPageManager, PageDescriptor, PageAddressIndex } = require('../src/virtual-page-manager');
 
@@ -310,6 +286,9 @@ describe('VirtualPageManager', () => {
     tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'vpm-test-'));
     // Use very small page size to test boundary conditions
     manager = new VirtualPageManager(mockBuffer, 16); // 16 byte pages!
+    // Reset mock calls
+    mockBuffer._notify.mockClear();
+    mockBuffer._markAsDetached.mockClear();
   });
 
   afterEach(async () => {

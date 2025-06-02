@@ -546,7 +546,6 @@ describe('File Safety and Corruption Handling', () => {
       expect(status.missingDataRanges).toBe(0);
       expect(status.totalSize).toBeGreaterThan(0);
       expect(status.filename).toBe(filePath);
-      expect(status.mode).toBeDefined();
     });
   });
 });

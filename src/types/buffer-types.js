@@ -1,15 +1,4 @@
 /**
- * Buffer mode enumeration
- * @enum {string}
- */
-const BufferMode = {
-  /** Binary mode for handling raw bytes */
-  BINARY: 'binary',
-  /** UTF-8 text mode with character-aware operations */
-  UTF8: 'utf8'
-};
-
-/**
  * Buffer data integrity state enumeration
  * @enum {string}
  */
@@ -38,7 +27,6 @@ const FileChangeStrategy = {
 };
 
 module.exports = {
-  BufferMode,
   BufferState,
   FileChangeStrategy
 };
