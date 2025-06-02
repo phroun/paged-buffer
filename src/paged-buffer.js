@@ -570,152 +570,6 @@ class PagedBuffer {
     }
   }
 
-  // =================== LINE OPERATIONS API ===================
-
-  /**
-   * Get total number of lines in the buffer
-   * @returns {Promise<number>} - Total line count
-   */
-  async getLineCount() {
-    return await this.lineAndMarksManager.getTotalLineCount();
-  }
-
-  /**
-   * Get line start positions (byte offsets)
-   * @returns {Promise<number[]>} - Array of byte positions where each line starts
-   */
-  async getLineStarts() {
-    return await this.lineAndMarksManager.getLineStarts();
-  }
-
-  /**
-   * Get information about a specific line
-   * @param {number} lineNumber - Line number (1-based)
-   * @returns {Promise<LineOperationResult|null>} - Line info or null if not found
-   */
-  async getLineInfo(lineNumber) {
-    return await this.lineAndMarksManager.getLineInfo(lineNumber);
-  }
-
-  /**
-   * Get information about multiple lines at once
-   * @param {number} startLine - Start line number (1-based, inclusive)
-   * @param {number} endLine - End line number (1-based, inclusive)
-   * @returns {Promise<LineOperationResult[]>} - Array of line info
-   */
-  async getMultipleLines(startLine, endLine) {
-    return await this.lineAndMarksManager.getMultipleLines(startLine, endLine);
-  }
-
-  /**
-   * Get line start addresses for a range of lines
-   * @param {number} startLine - Start line number (1-based)
-   * @param {number} endLine - End line number (1-based, inclusive)
-   * @returns {Promise<number[]>} - Array of start addresses
-   */
-  async getLineAddresses(startLine, endLine) {
-    return await this.lineAndMarksManager.getLineAddresses(startLine, endLine);
-  }
-
-  /**
-   * Convert byte address to line number
-   * @param {number} byteAddress - Byte address in buffer
-   * @returns {Promise<number>} - Line number (1-based) or 0 if invalid
-   */
-  async getLineNumberFromAddress(byteAddress) {
-    return await this.lineAndMarksManager.getLineNumberFromAddress(byteAddress);
-  }
-
-  /**
-   * Convert line/character position to absolute byte position
-   * @param {Object} pos - {line, character} (both 1-based)
-   * @param {number[]} lineStarts - Cached line starts (optional)
-   * @returns {Promise<number>} - Absolute byte position
-   */
-  async lineCharToBytePosition(pos, lineStarts = null) {
-    if (!lineStarts) {
-      lineStarts = await this.getLineStarts();
-    }
-
-    // Convert 1-based to 0-based for internal calculations
-    const line = pos.line - 1;
-    const character = pos.character - 1;
-
-    if (line >= lineStarts.length) {
-      return this.getTotalSize();
-    }
-
-    const lineStartByte = lineStarts[line];
-    
-    if (character <= 0) {
-      return lineStartByte;
-    }
-
-    let lineEndByte;
-    if (line + 1 < lineStarts.length) {
-      lineEndByte = lineStarts[line + 1] - 1;
-    } else {
-      lineEndByte = this.getTotalSize();
-    }
-
-    if (lineStartByte >= lineEndByte) {
-      return lineStartByte;
-    }
-
-    const lineBytes = await this.getBytes(lineStartByte, lineEndByte);
-    const lineText = lineBytes.toString('utf8');
-    
-    if (character >= lineText.length) {
-      return lineEndByte;
-    }
-
-    const characterBytes = Buffer.byteLength(lineText.substring(0, character), 'utf8');
-    return lineStartByte + characterBytes;
-  }
-
-  /**
-   * Convert absolute byte position to line/character position
-   * @param {number} bytePos - Absolute byte position
-   * @param {number[]} lineStarts - Cached line starts (optional)
-   * @returns {Promise<Object>} - {line, character} (both 1-based)
-   */
-  async byteToLineCharPosition(bytePos, lineStarts = null) {
-    const lineNumber = await this.getLineNumberFromAddress(bytePos);
-    
-    if (lineNumber === 0) {
-      return { line: 1, character: 1 };
-    }
-
-    if (!lineStarts) {
-      lineStarts = await this.getLineStarts();
-    }
-
-    const lineStartByte = lineStarts[lineNumber - 1]; // Convert to 0-based
-    const byteOffsetInLine = bytePos - lineStartByte;
-    
-    if (byteOffsetInLine === 0) {
-      return { line: lineNumber, character: 1 };
-    }
-
-    let lineEndByte;
-    if (lineNumber < lineStarts.length) {
-      lineEndByte = lineStarts[lineNumber] - 1;
-    } else {
-      lineEndByte = this.getTotalSize();
-    }
-
-    if (bytePos >= lineEndByte) {
-      const lineBytes = await this.getBytes(lineStartByte, lineEndByte);
-      const lineText = lineBytes.toString('utf8');
-      return { line: lineNumber, character: lineText.length + 1 };
-    }
-
-    const lineBytes = await this.getBytes(lineStartByte, Math.min(lineStartByte + byteOffsetInLine, lineEndByte));
-    const partialText = lineBytes.toString('utf8');
-    
-    return { line: lineNumber, character: partialText.length + 1 };
-  }
-
   // =================== NAMED MARKS API ===================
 
   /**
@@ -761,55 +615,6 @@ class PagedBuffer {
    */
   getAllMarks() {
     return this.lineAndMarksManager.getAllMarks();
-  }
-
-  // =================== CONVENIENCE LINE METHODS ===================
-
-  /**
-   * Insert content with line/character position (convenience method)
-   * @param {Object} pos - {line, character} (both 1-based)
-   * @param {string} text - Text to insert
-   * @param {number[]} lineStarts - Cached line starts (optional)
-   * @returns {Promise<{newPosition: Object, newLineStarts: number[]}>}
-   */
-  async insertTextAtPosition(pos, text, lineStarts = null) {
-    if (!lineStarts) {
-      lineStarts = await this.getLineStarts();
-    }
-
-    const bytePos = await this.lineCharToBytePosition(pos, lineStarts);
-    const textBuffer = Buffer.from(text, 'utf8');
-    
-    await this.insertBytes(bytePos, textBuffer);
-    
-    const newLineStarts = await this.getLineStarts();
-    const newBytePos = bytePos + textBuffer.length;
-    const newPosition = await this.byteToLineCharPosition(newBytePos, newLineStarts);
-    
-    return { newPosition, newLineStarts };
-  }
-
-  /**
-   * Delete content between line/character positions (convenience method)
-   * @param {Object} startPos - {line, character} (both 1-based)
-   * @param {Object} endPos - {line, character} (both 1-based)
-   * @param {number[]} lineStarts - Cached line starts (optional)
-   * @returns {Promise<{deletedText: string, newLineStarts: number[]}>}
-   */
-  async deleteTextBetweenPositions(startPos, endPos, lineStarts = null) {
-    if (!lineStarts) {
-      lineStarts = await this.getLineStarts();
-    }
-
-    const startByte = await this.lineCharToBytePosition(startPos, lineStarts);
-    const endByte = await this.lineCharToBytePosition(endPos, lineStarts);
-    
-    const deletedBytes = await this.deleteBytes(startByte, endByte);
-    const deletedText = deletedBytes.toString('utf8');
-    
-    const newLineStarts = await this.getLineStarts();
-    
-    return { deletedText, newLineStarts };
   }
 
   // =================== UNDO/REDO SYSTEM ===================
@@ -1583,6 +1388,131 @@ class PagedBuffer {
    */
   isClean() {
     return this.state === BufferState.CLEAN && !this.hasUnsavedChanges;
+  }
+
+// =================== SYNCHRONOUS LINE OPERATIONS API ===================
+
+  /**
+   * Get total number of lines in the buffer (SYNCHRONOUS)
+   * @returns {number} - Total line count
+   */
+  getLineCount() {
+    return this.lineAndMarksManager.getTotalLineCount();
+  }
+
+  /**
+   * Get line start positions (byte offsets) (SYNCHRONOUS)
+   * @returns {number[]} - Array of byte positions where each line starts
+   */
+  getLineStarts() {
+    return this.lineAndMarksManager.getLineStarts();
+  }
+
+  /**
+   * Get information about a specific line (SYNCHRONOUS)
+   * @param {number} lineNumber - Line number (1-based)
+   * @returns {LineOperationResult|null} - Line info or null if not found
+   */
+  getLineInfo(lineNumber) {
+    return this.lineAndMarksManager.getLineInfo(lineNumber);
+  }
+
+  /**
+   * Get information about multiple lines at once (SYNCHRONOUS)
+   * @param {number} startLine - Start line number (1-based, inclusive)
+   * @param {number} endLine - End line number (1-based, inclusive)
+   * @returns {LineOperationResult[]} - Array of line info
+   */
+  getMultipleLines(startLine, endLine) {
+    return this.lineAndMarksManager.getMultipleLines(startLine, endLine);
+  }
+
+  /**
+   * Get line start addresses for a range of lines (SYNCHRONOUS)
+   * @param {number} startLine - Start line number (1-based)
+   * @param {number} endLine - End line number (1-based, inclusive)
+   * @returns {number[]} - Array of start addresses
+   */
+  getLineAddresses(startLine, endLine) {
+    return this.lineAndMarksManager.getLineAddresses(startLine, endLine);
+  }
+
+  /**
+   * Convert byte address to line number (SYNCHRONOUS)
+   * @param {number} byteAddress - Byte address in buffer
+   * @returns {number} - Line number (1-based) or 0 if invalid
+   */
+  getLineNumberFromAddress(byteAddress) {
+    return this.lineAndMarksManager.getLineNumberFromAddress(byteAddress);
+  }
+
+  /**
+   * Convert line/character position to absolute byte position (SYNCHRONOUS)
+   * @param {Object} pos - {line, character} (both 1-based)
+   * @param {number[]} lineStarts - Cached line starts (optional)
+   * @returns {number} - Absolute byte position
+   */
+  lineCharToBytePosition(pos, lineStarts = null) {
+    return this.lineAndMarksManager.lineCharToBytePosition(pos, lineStarts);
+  }
+
+  /**
+   * Convert absolute byte position to line/character position (SYNCHRONOUS)
+   * @param {number} bytePos - Absolute byte position
+   * @param {number[]} lineStarts - Cached line starts (optional)
+   * @returns {Object} - {line, character} (both 1-based)
+   */
+  byteToLineCharPosition(bytePos, lineStarts = null) {
+    return this.lineAndMarksManager.byteToLineCharPosition(bytePos, lineStarts);
+  }
+
+  // =================== SYNCHRONOUS CONVENIENCE LINE METHODS ===================
+
+  /**
+   * Insert content with line/character position (SYNCHRONOUS convenience method)
+   * @param {Object} pos - {line, character} (both 1-based)
+   * @param {string} text - Text to insert
+   * @param {number[]} lineStarts - Cached line starts (optional)
+   * @returns {Promise<{newPosition: Object, newLineStarts: number[]}>}
+   */
+  async insertTextAtPosition(pos, text, lineStarts = null) {
+    if (!lineStarts) {
+      lineStarts = this.getLineStarts(); // Now synchronous!
+    }
+
+    const bytePos = this.lineCharToBytePosition(pos, lineStarts); // Now synchronous!
+    const textBuffer = Buffer.from(text, 'utf8');
+    
+    await this.insertBytes(bytePos, textBuffer);
+    
+    const newLineStarts = this.getLineStarts(); // Now synchronous!
+    const newBytePos = bytePos + textBuffer.length;
+    const newPosition = this.byteToLineCharPosition(newBytePos, newLineStarts); // Now synchronous!
+    
+    return { newPosition, newLineStarts };
+  }
+
+  /**
+   * Delete content between line/character positions (SYNCHRONOUS convenience method)
+   * @param {Object} startPos - {line, character} (both 1-based)
+   * @param {Object} endPos - {line, character} (both 1-based)
+   * @param {number[]} lineStarts - Cached line starts (optional)
+   * @returns {Promise<{deletedText: string, newLineStarts: number[]}>}
+   */
+  async deleteTextBetweenPositions(startPos, endPos, lineStarts = null) {
+    if (!lineStarts) {
+      lineStarts = this.getLineStarts(); // Now synchronous!
+    }
+
+    const startByte = this.lineCharToBytePosition(startPos, lineStarts); // Now synchronous!
+    const endByte = this.lineCharToBytePosition(endPos, lineStarts); // Now synchronous!
+    
+    const deletedBytes = await this.deleteBytes(startByte, endByte);
+    const deletedText = deletedBytes.toString('utf8');
+    
+    const newLineStarts = this.getLineStarts(); // Now synchronous!
+    
+    return { deletedText, newLineStarts };
   }
 
 }
