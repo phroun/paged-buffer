@@ -231,14 +231,11 @@ describe('PagedBuffer - Size Tracking Verification', () => {
       
       // Only test line tracking if size is correct
       if (buffer.virtualPageManager.getTotalSize() > 0) {
-        const lineStarts = await buffer.getLineStarts();
         const lineCount = await buffer.getLineCount();
         
-        console.log('  lineStarts:', lineStarts);
         console.log('  lineCount:', lineCount);
         
-        // These should pass if size tracking is working
-        expect(lineStarts.length).toBeGreaterThan(0);
+        // This should pass if size tracking is working
         expect(lineCount).toBeGreaterThan(0);
       } else {
         console.log('  Size is 0, skipping line tracking tests');
@@ -462,9 +459,6 @@ describe('PagedBuffer - Comprehensive Integration Tests', () => {
       await buffer.insertBytes(0, Buffer.from('# Document Title\n\n'));
       buffer.commitUndoTransaction();
       
-      // Get fresh line starts after header insertion
-      const lineStarts = await buffer.getLineStarts();
-      
       buffer.beginUndoTransaction('Edit middle line');
       
       // Simpler approach - find and replace the specific text
@@ -506,8 +500,8 @@ describe('PagedBuffer - Comprehensive Integration Tests', () => {
       expect(result).toEqual(expected);
       
       // Line operations should still work (return single line)
-      const lineStarts = await buffer.getLineStarts();
-      expect(lineStarts).toEqual([0]);
+      const lineCount = await buffer.getLineCount();
+      expect(lineCount).toEqual(1);
     });
   });
 
@@ -808,38 +802,74 @@ describe('PagedBuffer - Text Features (UTF-8)', () => {
   });
 
   describe('Line Operations', () => {
-    test('should get line starts for multi-line content', async () => {
+    test('should get accurate line count for multi-line content', async () => {
       const content = 'Line 1\nLine 2\nLine 3\n';
       buffer.loadContent(content);
       
-      const lineStarts = await buffer.getLineStarts();
+      const lineCount = buffer.getLineCount();
       
-      expect(lineStarts).toEqual([0, 7, 14, 21]); // Start of each line
+      expect(lineCount).toBe(4); // 3 lines + 1 final line after last newline
     });
 
     test('should handle empty content', async () => {
       buffer.loadContent('');
       
-      const lineStarts = await buffer.getLineStarts();
+      const lineCount = buffer.getLineCount();
       
-      expect(lineStarts).toEqual([0]);
+      expect(lineCount).toBe(1); // Empty buffer has 1 line
     });
 
     test('should handle content without newlines', async () => {
       buffer.loadContent('Single line content');
       
-      const lineStarts = await buffer.getLineStarts();
+      const lineCount = buffer.getLineCount();
       
-      expect(lineStarts).toEqual([0]);
+      expect(lineCount).toBe(1);
     });
 
     test('should get accurate line count', async () => {
       const content = 'Line 1\nLine 2\nLine 3';
       buffer.loadContent(content);
       
-      const lineCount = await buffer.getLineCount();
+      const lineCount = buffer.getLineCount();
       
       expect(lineCount).toBe(3);
+    });
+
+    test('should get line info for specific lines', async () => {
+      const content = 'Line 1\nLine 2\nLine 3\n';
+      buffer.loadContent(content);
+      
+      const line1 = buffer.getLineInfo(1);
+      const line2 = buffer.getLineInfo(2);
+      const line4 = buffer.getLineInfo(4);
+      
+      expect(line1).toBeTruthy();
+      expect(line1.lineNumber).toBe(1);
+      expect(line1.byteStart).toBe(0);
+      expect(line1.isExact).toBe(true);
+      
+      expect(line2).toBeTruthy();
+      expect(line2.lineNumber).toBe(2);
+      expect(line2.byteStart).toBe(7);
+      expect(line2.isExact).toBe(true);
+      
+      expect(line4).toBeTruthy();
+      expect(line4.lineNumber).toBe(4);
+      expect(line4.byteStart).toBe(21);
+      expect(line4.isExact).toBe(true);
+    });
+
+    test('should get multiple lines at once', async () => {
+      const content = 'Line 1\nLine 2\nLine 3\n';
+      buffer.loadContent(content);
+      
+      const lines = buffer.getMultipleLines(1, 3);
+      
+      expect(lines).toHaveLength(3);
+      expect(lines[0].lineNumber).toBe(1);
+      expect(lines[1].lineNumber).toBe(2);
+      expect(lines[2].lineNumber).toBe(3);
     });
   });
 
@@ -851,41 +881,42 @@ describe('PagedBuffer - Text Features (UTF-8)', () => {
 
     test('should convert line/character to byte position', async () => {
       // Start of first line (1-based indexing)
-      let bytePos = await buffer.lineCharToBytePosition({line: 1, character: 1});
+      let bytePos = buffer.lineCharToBytePosition({line: 1, character: 1});
       expect(bytePos).toBe(0);
       
       // Start of second line
-      bytePos = await buffer.lineCharToBytePosition({line: 2, character: 1});
+      bytePos = buffer.lineCharToBytePosition({line: 2, character: 1});
       expect(bytePos).toBe(11); // After "First line\n"
       
-      // Character 6 of first line (1-based, so 5th character)
-      bytePos = await buffer.lineCharToBytePosition({line: 1, character: 6});
+      // Character 6 of first line (1-based, so 5th byte offset)
+      bytePos = buffer.lineCharToBytePosition({line: 1, character: 6});
       expect(bytePos).toBe(5);
     });
 
     test('should convert byte position to line/character', async () => {
       // Start of buffer
-      let pos = await buffer.byteToLineCharPosition(0);
+      let pos = buffer.byteToLineCharPosition(0);
       expect(pos).toEqual({line: 1, character: 1}); // 1-based indexing
       
       // Start of second line
-      pos = await buffer.byteToLineCharPosition(11);
+      pos = buffer.byteToLineCharPosition(11);
       expect(pos).toEqual({line: 2, character: 1});
       
       // Middle of first line
-      pos = await buffer.byteToLineCharPosition(5);
+      pos = buffer.byteToLineCharPosition(5);
       expect(pos).toEqual({line: 1, character: 6}); // 1-based character position
     });
 
     test('should handle positions beyond line end', async () => {
-      const bytePos = await buffer.lineCharToBytePosition({line: 1, character: 1000});
+      const bytePos = buffer.lineCharToBytePosition({line: 1, character: 1000});
       
-      // Should clamp to end of buffer, not end of line since that's how our implementation works
-      expect(bytePos).toBeLessThanOrEqual(buffer.getTotalSize());
+      // Should clamp to end of line
+      const line1Info = buffer.getLineInfo(1);
+      expect(bytePos).toBeLessThanOrEqual(line1Info.byteEnd);
     });
 
     test('should handle positions beyond buffer end', async () => {
-      const pos = await buffer.byteToLineCharPosition(1000);
+      const pos = buffer.byteToLineCharPosition(1000);
       
       expect(pos.line).toBeGreaterThanOrEqual(1); // 1-based
       expect(pos.character).toBeGreaterThanOrEqual(1); // 1-based
@@ -905,7 +936,6 @@ describe('PagedBuffer - Text Features (UTF-8)', () => {
       
       expect(result.newPosition.line).toBe(2);
       expect(result.newPosition.character).toBe(14); // After inserted text, 1-based
-      expect(result.newLineStarts).toBeTruthy();
       
       const content = await buffer.getBytes(0, buffer.getTotalSize());
       expect(content.toString()).toContain('Line inserted 2');
@@ -918,7 +948,6 @@ describe('PagedBuffer - Text Features (UTF-8)', () => {
       );
       
       expect(result.deletedText).toBe('1\nLine');
-      expect(result.newLineStarts).toBeTruthy();
       
       const content = await buffer.getBytes(0, buffer.getTotalSize());
       expect(content.toString()).toContain('Line  2'); // "Line " + " 2"
@@ -930,8 +959,114 @@ describe('PagedBuffer - Text Features (UTF-8)', () => {
         'New line\nAnother line\n'
       );
       
-      const lineCount = await buffer.getLineCount();
+      const lineCount = buffer.getLineCount();
       expect(lineCount).toBeGreaterThan(3); // Original + inserted lines
+    });
+  });
+
+  describe('seekAddress functionality', () => {
+    test('should load pages on demand with seekAddress', async () => {
+      // Create content across multiple pages
+      const largeContent = 'A'.repeat(200); // Multiple 64-byte pages
+      buffer.loadContent(largeContent);
+      
+      // Get line info without loading (may be approximate)
+      const lineInfo = buffer.getLineInfo(1);
+      
+      // Ensure exact loading with seekAddress
+      const loaded = await buffer.seekAddress(lineInfo.byteStart);
+      expect(loaded).toBe(true);
+      
+      // Get exact line info after seeking
+      const exactLineInfo = buffer.getLineInfo(1);
+      expect(exactLineInfo.isExact).toBe(true);
+    });
+
+    test('should handle invalid addresses in seekAddress', async () => {
+      buffer.loadContent('test');
+      
+      const loaded1 = await buffer.seekAddress(-1);
+      expect(loaded1).toBe(false);
+      
+      const loaded2 = await buffer.seekAddress(1000);
+      expect(loaded2).toBe(false);
+    });
+  });
+});
+
+describe('PagedBuffer - Comprehensive Integration Tests', () => {
+  let buffer;
+
+  beforeEach(() => {
+    buffer = new PagedBuffer(128);
+    buffer.enableUndo({
+      mergeTimeWindow: 15000,
+      mergePositionWindow: 0
+    });
+  });
+
+  describe('Complex Edit Scenarios', () => {
+    test('should handle realistic text editing workflow', async () => {
+      // Start with some content
+      const initialContent = 'Hello World\nThis is a test\nEnd of file';
+      buffer.loadContent(initialContent);
+      
+      // Simulate user editing workflow
+      buffer.beginUndoTransaction('Add header');
+      await buffer.insertBytes(0, Buffer.from('# Document Title\n\n'));
+      buffer.commitUndoTransaction();
+      
+      buffer.beginUndoTransaction('Edit middle line');
+      
+      // Find and replace using line operations
+      const line3Info = buffer.getLineInfo(4); // Line with "This is a test"
+      if (line3Info) {
+        const lineContent = await buffer.getBytes(line3Info.byteStart, line3Info.byteEnd);
+        const lineStr = lineContent.toString();
+        const testIndex = lineStr.indexOf('This is a test');
+        
+        if (testIndex !== -1) {
+          const globalIndex = line3Info.byteStart + testIndex;
+          await buffer.deleteBytes(globalIndex, globalIndex + 'This is a test'.length);
+          await buffer.insertBytes(globalIndex, Buffer.from('This is modified content'));
+        }
+      }
+      
+      buffer.commitUndoTransaction();
+      
+      // Verify final content
+      const finalContent = await buffer.getBytes(0, buffer.getTotalSize());
+      const expectedContent = '# Document Title\n\nHello World\nThis is modified content\nEnd of file';
+      expect(finalContent.toString()).toBe(expectedContent);
+      
+      // Verify undo works correctly
+      await buffer.undo(); // Undo edit
+      await buffer.undo(); // Undo header addition
+      
+      const undoneContent = await buffer.getBytes(0, buffer.getTotalSize());
+      expect(undoneContent.toString()).toBe(initialContent);
+    });
+
+    test('should handle mixed binary and text operations', async () => {
+      // Load binary content using proper method
+      const binaryData = Buffer.from([0x00, 0x01, 0x02, 0xFF, 0xFE, 0xFD]);
+      buffer.loadBinaryContent(binaryData);
+      
+      // Insert more binary data
+      await buffer.insertBytes(3, Buffer.from([0xAA, 0xBB, 0xCC]));
+      
+      // Verify binary integrity
+      const result = await buffer.getBytes(0, buffer.getTotalSize());
+      const expected = Buffer.from([0x00, 0x01, 0x02, 0xAA, 0xBB, 0xCC, 0xFF, 0xFE, 0xFD]);
+      expect(result).toEqual(expected);
+      
+      // Line operations should still work (return single line for binary data)
+      const lineCount = buffer.getLineCount();
+      expect(lineCount).toBe(1);
+      
+      const lineInfo = buffer.getLineInfo(1);
+      expect(lineInfo.byteStart).toBe(0);
+      expect(lineInfo.byteEnd).toBe(buffer.getTotalSize());
     });
   });
 });

@@ -1,20 +1,21 @@
 /**
- * @fileoverview Line and Marks Manager - Simplified line tracking and named marks
+ * @fileoverview Line and Marks Manager - Simple synchronous line tracking
  * @description Manages line positions and named marks across the virtual buffer
  * @author Jeffrey R. Day
- * @version 1.2.0 - Made line operations synchronous
+ * @version 1.3.0 - Removed global line cache, simple sync operations
  */
 
 /**
  * Represents the result of line-related operations
  */
 class LineOperationResult {
-  constructor(lineNumber, byteStart, byteEnd, marks = []) {
+  constructor(lineNumber, byteStart, byteEnd, marks = [], isExact = true) {
     this.lineNumber = lineNumber; // 1-based line number
-    this.byteStart = byteStart; // Start byte address (inclusive)
-    this.byteEnd = byteEnd; // End byte address (exclusive)
+    this.byteStart = byteStart; // Start byte address (exact or page boundary)
+    this.byteEnd = byteEnd; // End byte address (exact or page boundary)
     this.length = byteEnd - byteStart; // Line length in bytes
     this.marks = marks; // Marks within this line
+    this.isExact = isExact; // true = exact line bounds, false = page bounds
   }
 }
 
@@ -29,7 +30,7 @@ class ExtractedContent {
 }
 
 /**
- * Simplified line and marks manager - synchronous line operations
+ * Simple synchronous line and marks manager
  */
 class LineAndMarksManager {
   constructor(virtualPageManager) {
@@ -37,11 +38,6 @@ class LineAndMarksManager {
     
     // Global marks registry (always in memory)
     this.globalMarks = new Map(); // markName -> virtualAddress
-    
-    // Cache for line information to support sync operations
-    this._cachedLineStarts = null;
-    this._lineStartsCacheValid = false;
-    this._cachedLineCount = null;
   }
 
   /**
@@ -66,9 +62,7 @@ class LineAndMarksManager {
       // Marks before modification are unaffected
     }
 
-    // Update marks in affected pages (handled by VPM)
-    
-    // Invalidate line caches
+    // Invalidate page line caches
     this.invalidateLineCaches();
   }
 
@@ -88,11 +82,29 @@ class LineAndMarksManager {
     for (const descriptor of this.vpm.addressIndex.getAllPages()) {
       descriptor.lineInfoCached = false;
     }
-    
-    // Invalidate our own caches
-    this._lineStartsCacheValid = false;
-    this._cachedLineStarts = null;
-    this._cachedLineCount = null;
+  }
+
+  /**
+   * Ensure page containing address is loaded (ASYNC)
+   * @param {number} address - Byte address to load
+   * @returns {Promise<boolean>} - True if page was loaded successfully
+   */
+  async seekAddress(address) {
+    if (address < 0 || address > this.vpm.getTotalSize()) {
+      return false;
+    }
+
+    const descriptor = this.vpm.addressIndex.findPageAt(address);
+    if (!descriptor) {
+      return false;
+    }
+
+    try {
+      await this.vpm._ensurePageLoaded(descriptor);
+      return true;
+    } catch (error) {
+      return false;
+    }
   }
 
   // =================== MARKS MANAGEMENT ===================
@@ -221,84 +233,43 @@ class LineAndMarksManager {
     }
   }
 
-  // =================== SYNCHRONOUS LINE TRACKING ===================
-
-  /**
-   * Ensure line starts cache is built and valid
-   * @private
-   */
-  _ensureLineStartsCache() {
-    if (this._lineStartsCacheValid && this._cachedLineStarts !== null) {
-      return;
-    }
-
-    const totalSize = this.vpm.getTotalSize();
-    if (totalSize === 0) {
-      this._cachedLineStarts = [0]; // Empty content has 1 line starting at 0
-      this._cachedLineCount = 1;
-      this._lineStartsCacheValid = true;
-      return;
-    }
-
-    const starts = [0]; // First line always starts at 0
-    
-    // Process pages to find newlines
-    for (const descriptor of this.vpm.addressIndex.getAllPages()) {
-      if (descriptor.virtualSize === 0) {
-        continue; // Skip empty pages
-      }
-
-      // Only process pages that have cached line info or are currently loaded
-      if (descriptor.lineInfoCached && descriptor.newlineCount > 0) {
-        // Use cached newline count - we need exact positions, so try to get from loaded page
-        if (this.vpm.pageCache.has(descriptor.pageId)) {
-          const pageInfo = this.vpm.pageCache.get(descriptor.pageId);
-          pageInfo.ensureLineCacheValid();
-          
-          // Convert page-relative positions to global positions
-          for (const nlPos of pageInfo.newlinePositions) {
-            starts.push(descriptor.virtualStart + nlPos + 1);
-          }
-        } else {
-          // Page not loaded, but we know it has newlines
-          // We can't get exact positions synchronously, so we'll have incomplete data
-          // This is a limitation of making it synchronous
-          console.warn(`Line cache incomplete: page ${descriptor.pageId} has newlines but is not loaded`);
-        }
-      } else if (this.vpm.pageCache.has(descriptor.pageId)) {
-        // Page is loaded but line info not cached - build it now
-        const pageInfo = this.vpm.pageCache.get(descriptor.pageId);
-        pageInfo.ensureLineCacheValid();
-        descriptor.cacheLineInfo(pageInfo);
-        
-        // Convert page-relative positions to global positions
-        for (const nlPos of pageInfo.newlinePositions) {
-          starts.push(descriptor.virtualStart + nlPos + 1);
-        }
-      }
-    }
-    
-    this._cachedLineStarts = starts;
-    this._cachedLineCount = starts.length;
-    this._lineStartsCacheValid = true;
-  }
+  // =================== SIMPLE SYNCHRONOUS LINE TRACKING ===================
 
   /**
    * Get the total number of lines in the buffer (SYNCHRONOUS)
    * @returns {number} - Total line count
    */
   getTotalLineCount() {
-    this._ensureLineStartsCache();
-    return this._cachedLineCount;
-  }
+    const totalSize = this.vpm.getTotalSize();
+    if (totalSize === 0) {
+      return 1; // Empty content has 1 line
+    }
 
-  /**
-   * Get the byte addresses where lines start (SYNCHRONOUS)
-   * @returns {number[]} - Array of line start addresses
-   */
-  getLineStarts() {
-    this._ensureLineStartsCache();
-    return [...this._cachedLineStarts]; // Return copy to prevent mutation
+    let lineCount = 1; // Start with first line
+    
+    for (const descriptor of this.vpm.addressIndex.getAllPages()) {
+      if (descriptor.virtualSize === 0) {
+        continue; // Skip empty pages
+      }
+
+      // Use cached newline count if available
+      if (descriptor.lineInfoCached) {
+        lineCount += descriptor.newlineCount;
+      } else if (this.vpm.pageCache.has(descriptor.pageId)) {
+        // Page is loaded - count newlines and cache the result
+        const pageInfo = this.vpm.pageCache.get(descriptor.pageId);
+        pageInfo.ensureLineCacheValid();
+        descriptor.cacheLineInfo(pageInfo);
+        lineCount += descriptor.newlineCount;
+      } else {
+        // Page not loaded and no cached count - we can't know exactly
+        // This is a limitation of keeping it synchronous
+        // For now, assume worst case of 0 newlines in unloaded pages
+        // (Total will be underestimated but won't crash)
+      }
+    }
+    
+    return lineCount;
   }
 
   /**
@@ -311,23 +282,74 @@ class LineAndMarksManager {
       return null;
     }
 
-    const lineStarts = this.getLineStarts();
-    
-    if (lineNumber > lineStarts.length) {
-      return null;
+    const totalSize = this.vpm.getTotalSize();
+    if (totalSize === 0) {
+      return lineNumber === 1 ? 
+        new LineOperationResult(1, 0, 0, [], true) : null;
     }
 
-    const startAddress = lineStarts[lineNumber - 1];
-    let endAddress;
-    
-    if (lineNumber < lineStarts.length) {
-      endAddress = lineStarts[lineNumber];
-    } else {
-      endAddress = this.vpm.getTotalSize();
+    let currentLine = 1;
+    let currentAddress = 0;
+
+    for (const descriptor of this.vpm.addressIndex.getAllPages()) {
+      if (descriptor.virtualSize === 0) {
+        continue;
+      }
+
+      const pageStartLine = currentLine;
+      const pageStartAddress = currentAddress;
+      const pageEndAddress = descriptor.virtualStart + descriptor.virtualSize;
+
+      // Count lines in this page
+      let pageLinesCount = 0;
+      let exactPositions = null;
+
+      if (this.vpm.pageCache.has(descriptor.pageId)) {
+        // Page is loaded - get exact line positions
+        const pageInfo = this.vpm.pageCache.get(descriptor.pageId);
+        pageInfo.ensureLineCacheValid();
+        descriptor.cacheLineInfo(pageInfo);
+        pageLinesCount = descriptor.newlineCount;
+        exactPositions = pageInfo.newlinePositions;
+      } else if (descriptor.lineInfoCached) {
+        // Use cached count
+        pageLinesCount = descriptor.newlineCount;
+      }
+
+      // Check if target line is in this page
+      if (lineNumber >= currentLine && lineNumber < currentLine + pageLinesCount + 1) {
+        if (exactPositions && lineNumber < currentLine + pageLinesCount) {
+          // Target line ends with a newline in this page - exact position
+          const lineIndex = lineNumber - currentLine;
+          const lineStart = lineIndex === 0 ? descriptor.virtualStart : 
+            descriptor.virtualStart + exactPositions[lineIndex - 1] + 1;
+          const lineEnd = descriptor.virtualStart + exactPositions[lineIndex] + 1;
+          
+          const marks = this.getMarksInRange(lineStart, lineEnd - 1);
+          return new LineOperationResult(lineNumber, lineStart, lineEnd, marks, true);
+        } else if (exactPositions) {
+          // Target line is the last line in this page (no trailing newline)
+          const lastNewlinePos = exactPositions.length > 0 ? 
+            descriptor.virtualStart + exactPositions[exactPositions.length - 1] + 1 : 
+            descriptor.virtualStart;
+          const lineStart = exactPositions.length > 0 ? lastNewlinePos : descriptor.virtualStart;
+          const lineEnd = pageEndAddress;
+          
+          const marks = this.getMarksInRange(lineStart, lineEnd - 1);
+          return new LineOperationResult(lineNumber, lineStart, lineEnd, marks, true);
+        } else {
+          // Page not loaded - return page boundaries as approximation
+          const marks = this.getMarksInRange(descriptor.virtualStart, pageEndAddress - 1);
+          return new LineOperationResult(lineNumber, descriptor.virtualStart, pageEndAddress, marks, false);
+        }
+      }
+
+      currentLine += pageLinesCount;
+      currentAddress = pageEndAddress;
     }
 
-    const marks = this.getMarksInRange(startAddress, endAddress - 1);
-    return new LineOperationResult(lineNumber, startAddress, endAddress, marks);
+    // Line not found or beyond end
+    return null;
   }
 
   /**
@@ -339,33 +361,15 @@ class LineAndMarksManager {
   getMultipleLines(startLine, endLine) {
     const result = [];
     const clampedStart = Math.max(1, startLine);
-    const totalLines = this.getTotalLineCount();
-    const clampedEnd = Math.min(totalLines, endLine);
+    const clampedEnd = Math.max(clampedStart, endLine);
     
     for (let lineNum = clampedStart; lineNum <= clampedEnd; lineNum++) {
       const lineInfo = this.getLineInfo(lineNum);
       if (lineInfo) {
         result.push(lineInfo);
+      } else {
+        break; // No more lines
       }
-    }
-    
-    return result;
-  }
-
-  /**
-   * Get line addresses for a range of lines (SYNCHRONOUS)
-   * @param {number} startLine - Start line number (1-based)
-   * @param {number} endLine - End line number (1-based, inclusive)
-   * @returns {number[]} - Array of start addresses
-   */
-  getLineAddresses(startLine, endLine) {
-    const lineStarts = this.getLineStarts();
-    const result = [];
-    const clampedStart = Math.max(1, startLine);
-    const clampedEnd = Math.min(lineStarts.length, endLine);
-    
-    for (let lineNum = clampedStart; lineNum <= clampedEnd; lineNum++) {
-      result.push(lineStarts[lineNum - 1]);
     }
     
     return result;
@@ -381,72 +385,84 @@ class LineAndMarksManager {
       return 0;
     }
 
-    const lineStarts = this.getLineStarts();
-    
-    // Binary search to find the line
-    let left = 0;
-    let right = lineStarts.length - 1;
-    let bestLine = 0;
-    
-    while (left <= right) {
-      const mid = Math.floor((left + right) / 2);
-      const lineStart = lineStarts[mid];
-      
-      if (lineStart <= virtualAddress) {
-        bestLine = mid + 1; // Convert to 1-based
-        left = mid + 1;
-      } else {
-        right = mid - 1;
+    if (this.vpm.getTotalSize() === 0) {
+      return 1; // Empty buffer has line 1
+    }
+
+    let currentLine = 1;
+
+    for (const descriptor of this.vpm.addressIndex.getAllPages()) {
+      if (descriptor.virtualSize === 0) {
+        continue;
+      }
+
+      // Check if address is in this page
+      if (virtualAddress >= descriptor.virtualStart && virtualAddress < descriptor.virtualEnd) {
+        if (this.vpm.pageCache.has(descriptor.pageId)) {
+          // Page is loaded - get exact line
+          const pageInfo = this.vpm.pageCache.get(descriptor.pageId);
+          pageInfo.ensureLineCacheValid();
+          descriptor.cacheLineInfo(pageInfo);
+          
+          const relativeAddress = virtualAddress - descriptor.virtualStart;
+          let linesInPage = 0;
+          
+          for (const nlPos of pageInfo.newlinePositions) {
+            if (relativeAddress <= nlPos) {
+              break;
+            }
+            linesInPage++;
+          }
+          
+          return currentLine + linesInPage;
+        } else {
+          // Page not loaded - return start of page's line range
+          return currentLine;
+        }
+      }
+
+      // Count lines in this page and continue
+      if (this.vpm.pageCache.has(descriptor.pageId)) {
+        const pageInfo = this.vpm.pageCache.get(descriptor.pageId);
+        pageInfo.ensureLineCacheValid();
+        descriptor.cacheLineInfo(pageInfo);
+        currentLine += descriptor.newlineCount;
+      } else if (descriptor.lineInfoCached) {
+        currentLine += descriptor.newlineCount;
       }
     }
-    
-    return bestLine;
+
+    return currentLine; // Address is at end of buffer
   }
 
   /**
    * Convert line/character position to absolute byte position (SYNCHRONOUS)
    * @param {Object} pos - {line, character} (both 1-based, character = byte offset in line)
-   * @param {number[]} lineStarts - Cached line starts (optional)
+   * @param {number[]} lineStarts - Ignored (legacy parameter)
    * @returns {number} - Absolute byte position
    */
   lineCharToBytePosition(pos, lineStarts = null) {
-    if (!lineStarts) {
-      lineStarts = this.getLineStarts();
-    }
-
-    // Convert 1-based to 0-based for internal calculations
-    const line = pos.line - 1;
-    const character = pos.character - 1; // character is really byte offset
-
-    if (line >= lineStarts.length) {
+    const lineInfo = this.getLineInfo(pos.line);
+    if (!lineInfo) {
       return this.vpm.getTotalSize();
     }
 
-    const lineStartByte = lineStarts[line];
-    
+    const character = pos.character - 1; // Convert to 0-based
     if (character <= 0) {
-      return lineStartByte;
-    }
-
-    // Calculate line end for boundary checking
-    let lineEndByte;
-    if (line + 1 < lineStarts.length) {
-      lineEndByte = lineStarts[line + 1] - 1; // Exclude newline
-    } else {
-      lineEndByte = this.vpm.getTotalSize();
+      return lineInfo.byteStart;
     }
 
     // Simple byte arithmetic - character position is byte offset within line
-    const targetByte = lineStartByte + character;
+    const targetByte = lineInfo.byteStart + character;
     
     // Clamp to line boundaries
-    return Math.min(targetByte, lineEndByte);
+    return Math.min(targetByte, lineInfo.byteEnd - 1);
   }
 
   /**
    * Convert absolute byte position to line/character position (SYNCHRONOUS)
    * @param {number} bytePos - Absolute byte position
-   * @param {number[]} lineStarts - Cached line starts (optional)
+   * @param {number[]} lineStarts - Ignored (legacy parameter)
    * @returns {Object} - {line, character} (both 1-based, character = byte offset in line + 1)
    */
   byteToLineCharPosition(bytePos, lineStarts = null) {
@@ -456,55 +472,15 @@ class LineAndMarksManager {
       return { line: 1, character: 1 };
     }
 
-    if (!lineStarts) {
-      lineStarts = this.getLineStarts();
+    const lineInfo = this.getLineInfo(lineNumber);
+    if (!lineInfo) {
+      return { line: lineNumber, character: 1 };
     }
 
-    const lineStartByte = lineStarts[lineNumber - 1]; // Convert to 0-based
-    const byteOffsetInLine = bytePos - lineStartByte;
+    const byteOffsetInLine = bytePos - lineInfo.byteStart;
     
     // Simple byte arithmetic - character position is byte offset + 1 (for 1-based indexing)
     return { line: lineNumber, character: byteOffsetInLine + 1 };
-  }
-
-  /**
-   * Attempt to get bytes synchronously (best effort)
-   * @param {number} start - Start position
-   * @param {number} end - End position
-   * @returns {Buffer|null} - Data if available synchronously, null otherwise
-   * @private
-   */
-  _getBytesSync(start, end) {
-    // This is a best-effort synchronous read that only works if pages are loaded
-    try {
-      const affectedPages = this.vpm.addressIndex.getPagesInRange(start, end);
-      const chunks = [];
-      
-      for (const descriptor of affectedPages) {
-        if (!this.vpm.pageCache.has(descriptor.pageId)) {
-          return null; // Page not loaded, can't read synchronously
-        }
-        
-        const pageInfo = this.vpm.pageCache.get(descriptor.pageId);
-        
-        // Calculate intersection with read range
-        const readStart = Math.max(start, descriptor.virtualStart);
-        const readEnd = Math.min(end, descriptor.virtualEnd);
-        
-        const relativeStart = readStart - descriptor.virtualStart;
-        const relativeEnd = readEnd - descriptor.virtualStart;
-        
-        const actualEnd = Math.min(relativeEnd, pageInfo.data.length);
-        
-        if (relativeStart < pageInfo.data.length) {
-          chunks.push(pageInfo.data.subarray(relativeStart, actualEnd));
-        }
-      }
-      
-      return Buffer.concat(chunks);
-    } catch (error) {
-      return null;
-    }
   }
 
   // =================== ENHANCED OPERATIONS WITH MARKS (Still Async) ===================
@@ -603,15 +579,14 @@ class LineAndMarksManager {
    */
   getMemoryStats() {
     let marksMemory = this.globalMarks.size * 64; // Rough estimate
-    let linesCacheMemory = this._cachedLineStarts ? this._cachedLineStarts.length * 8 : 0;
     
     return {
       globalMarksCount: this.globalMarks.size,
-      totalLines: this._cachedLineCount || -1,
-      lineStartsCacheSize: this._cachedLineStarts ? this._cachedLineStarts.length : 0,
-      lineStartsCacheValid: this._lineStartsCacheValid,
+      totalLines: -1, // No longer cached globally
+      lineStartsCacheSize: 0, // No global cache
+      lineStartsCacheValid: true, // Always valid since no cache
       estimatedMarksMemory: marksMemory,
-      estimatedLinesCacheMemory: linesCacheMemory
+      estimatedLinesCacheMemory: 0 // No global cache
     };
   }
 }

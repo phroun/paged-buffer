@@ -1401,14 +1401,6 @@ class PagedBuffer {
   }
 
   /**
-   * Get line start positions (byte offsets) (SYNCHRONOUS)
-   * @returns {number[]} - Array of byte positions where each line starts
-   */
-  getLineStarts() {
-    return this.lineAndMarksManager.getLineStarts();
-  }
-
-  /**
    * Get information about a specific line (SYNCHRONOUS)
    * @param {number} lineNumber - Line number (1-based)
    * @returns {LineOperationResult|null} - Line info or null if not found
@@ -1428,16 +1420,6 @@ class PagedBuffer {
   }
 
   /**
-   * Get line start addresses for a range of lines (SYNCHRONOUS)
-   * @param {number} startLine - Start line number (1-based)
-   * @param {number} endLine - End line number (1-based, inclusive)
-   * @returns {number[]} - Array of start addresses
-   */
-  getLineAddresses(startLine, endLine) {
-    return this.lineAndMarksManager.getLineAddresses(startLine, endLine);
-  }
-
-  /**
    * Convert byte address to line number (SYNCHRONOUS)
    * @param {number} byteAddress - Byte address in buffer
    * @returns {number} - Line number (1-based) or 0 if invalid
@@ -1448,74 +1430,67 @@ class PagedBuffer {
 
   /**
    * Convert line/character position to absolute byte position (SYNCHRONOUS)
-   * @param {Object} pos - {line, character} (both 1-based)
-   * @param {number[]} lineStarts - Cached line starts (optional)
+   * @param {Object} pos - {line, character} (both 1-based, character = byte offset in line)
    * @returns {number} - Absolute byte position
    */
-  lineCharToBytePosition(pos, lineStarts = null) {
-    return this.lineAndMarksManager.lineCharToBytePosition(pos, lineStarts);
+  lineCharToBytePosition(pos) {
+    return this.lineAndMarksManager.lineCharToBytePosition(pos);
   }
 
   /**
    * Convert absolute byte position to line/character position (SYNCHRONOUS)
    * @param {number} bytePos - Absolute byte position
-   * @param {number[]} lineStarts - Cached line starts (optional)
-   * @returns {Object} - {line, character} (both 1-based)
+   * @returns {Object} - {line, character} (both 1-based, character = byte offset in line + 1)
    */
-  byteToLineCharPosition(bytePos, lineStarts = null) {
-    return this.lineAndMarksManager.byteToLineCharPosition(bytePos, lineStarts);
+  byteToLineCharPosition(bytePos) {
+    return this.lineAndMarksManager.byteToLineCharPosition(bytePos);
   }
 
-  // =================== SYNCHRONOUS CONVENIENCE LINE METHODS ===================
+  /**
+   * Ensure page containing address is loaded (ASYNC)
+   * @param {number} address - Byte address to load
+   * @returns {Promise<boolean>} - True if page was loaded successfully
+   */
+  async seekAddress(address) {
+    return await this.lineAndMarksManager.seekAddress(address);
+  }
+
+  // =================== CONVENIENCE LINE METHODS ===================
 
   /**
-   * Insert content with line/character position (SYNCHRONOUS convenience method)
-   * @param {Object} pos - {line, character} (both 1-based)
+   * Insert content with line/character position (convenience method)
+   * @param {Object} pos - {line, character} (both 1-based, character = byte offset)
    * @param {string} text - Text to insert
-   * @param {number[]} lineStarts - Cached line starts (optional)
-   * @returns {Promise<{newPosition: Object, newLineStarts: number[]}>}
+   * @returns {Promise<{newPosition: Object}>}
    */
-  async insertTextAtPosition(pos, text, lineStarts = null) {
-    if (!lineStarts) {
-      lineStarts = this.getLineStarts(); // Now synchronous!
-    }
-
-    const bytePos = this.lineCharToBytePosition(pos, lineStarts); // Now synchronous!
+  async insertTextAtPosition(pos, text) {
+    const bytePos = this.lineCharToBytePosition(pos);
     const textBuffer = Buffer.from(text, 'utf8');
     
     await this.insertBytes(bytePos, textBuffer);
     
-    const newLineStarts = this.getLineStarts(); // Now synchronous!
     const newBytePos = bytePos + textBuffer.length;
-    const newPosition = this.byteToLineCharPosition(newBytePos, newLineStarts); // Now synchronous!
+    const newPosition = this.byteToLineCharPosition(newBytePos);
     
-    return { newPosition, newLineStarts };
+    return { newPosition };
   }
 
   /**
-   * Delete content between line/character positions (SYNCHRONOUS convenience method)
-   * @param {Object} startPos - {line, character} (both 1-based)
-   * @param {Object} endPos - {line, character} (both 1-based)
-   * @param {number[]} lineStarts - Cached line starts (optional)
-   * @returns {Promise<{deletedText: string, newLineStarts: number[]}>}
+   * Delete content between line/character positions (convenience method)
+   * @param {Object} startPos - {line, character} (both 1-based, character = byte offset)
+   * @param {Object} endPos - {line, character} (both 1-based, character = byte offset)
+   * @returns {Promise<{deletedText: string}>}
    */
-  async deleteTextBetweenPositions(startPos, endPos, lineStarts = null) {
-    if (!lineStarts) {
-      lineStarts = this.getLineStarts(); // Now synchronous!
-    }
-
-    const startByte = this.lineCharToBytePosition(startPos, lineStarts); // Now synchronous!
-    const endByte = this.lineCharToBytePosition(endPos, lineStarts); // Now synchronous!
+  async deleteTextBetweenPositions(startPos, endPos) {
+    const startByte = this.lineCharToBytePosition(startPos);
+    const endByte = this.lineCharToBytePosition(endPos);
     
     const deletedBytes = await this.deleteBytes(startByte, endByte);
     const deletedText = deletedBytes.toString('utf8');
     
-    const newLineStarts = this.getLineStarts(); // Now synchronous!
-    
-    return { deletedText, newLineStarts };
+    return { deletedText };
   }
-
 }
-
+  
 // Export the MissingDataRange class as well for testing
 module.exports = { PagedBuffer, MissingDataRange };
