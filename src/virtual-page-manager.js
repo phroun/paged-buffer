@@ -7,7 +7,8 @@
  */
 
 const fs = require('fs').promises;
-const path = require('path');
+const { PageInfo } = require('./utils/page-info');
+const logger = require('./utils/logger');
 
 /**
  * Represents a page's metadata for address translation
@@ -519,12 +520,12 @@ class VirtualPageManager {
    * @param {Buffer} data - Data to insert
    */
   async insertAt(virtualPos, data) {
-    console.log(`[DEBUG] insertAt: pos=${virtualPos}, dataLen=${data.length}`);
+    logger.debug(`[DEBUG] insertAt: pos=${virtualPos}, dataLen=${data.length}`);
     
     const { descriptor, relativePos } = await this.translateAddress(virtualPos);
     const pageInfo = await this._ensurePageLoaded(descriptor);
     
-    console.log(`[DEBUG] Page ${descriptor.pageId} current size: ${pageInfo.currentSize}, max: ${this.maxPageSize}`);
+    logger.debug(`[DEBUG] Page ${descriptor.pageId} current size: ${pageInfo.currentSize}, max: ${this.maxPageSize}`);
     
     // Perform the insertion within the page
     const before = pageInfo.data.subarray(0, relativePos);
@@ -550,7 +551,7 @@ class VirtualPageManager {
 
     // Check if page needs splitting
     if (newData.length > this.maxPageSize) {
-      console.log(`[DEBUG] Page split needed: ${newData.length} > ${this.maxPageSize}`);
+      logger.debug(`[DEBUG] Page split needed: ${newData.length} > ${this.maxPageSize}`);
       await this._splitPage(descriptor);
     }
     
@@ -703,7 +704,7 @@ class VirtualPageManager {
    * @private
    */
   async _splitPage(descriptor) {
-    console.log(`[DEBUG] _splitPage called for page ${descriptor.pageId}`);
+    logger.debug(`[DEBUG] _splitPage called for page ${descriptor.pageId}`);
     const pageInfo = this.pageCache.get(descriptor.pageId);
     if (!pageInfo) return;
     
@@ -711,7 +712,7 @@ class VirtualPageManager {
     const newPageId = this._generatePageId();
     
     // Extract marks from the second half before splitting
-    const marksInSecondHalf = pageInfo.extractMarksFromRange(splitPoint, pageInfo.currentSize);
+    const marksInSecondHalf = this.lineAndMarksManager ? this.lineAndMarksManager.getMarksInRange(splitPoint, pageInfo.currentSize) : [];
     
     // Split the page in the address index
     const newDescriptor = this.addressIndex.splitPage(
@@ -722,10 +723,14 @@ class VirtualPageManager {
     
     // Create new page data
     const newData = pageInfo.data.subarray(splitPoint);
-    const newPageInfo = this._createPageInfo(newDescriptor, newData);
+    this._createPageInfo(newDescriptor, newData);
     
-    // Insert marks into the new page
-    newPageInfo.insertMarksFromRelative(0, marksInSecondHalf, newDescriptor.virtualStart);
+    // Insert marks into the new page - corrected jrd
+    if (this.lineAndMarksManager && marksInSecondHalf && (marksInSecondHalf.length > 0)) {
+      logger.debug('[DEBUG] (JRD)');
+      logger.debug(marksInSecondHalf);
+      this.lineAndMarksManager.insertMarksFromRelative(0, marksInSecondHalf, newDescriptor.virtualStart);
+    }
     
     // Update original page data
     const originalData = pageInfo.data.subarray(0, splitPoint);
@@ -737,7 +742,7 @@ class VirtualPageManager {
     }
 
     // Make sure notification is called
-    console.log(`[DEBUG] Sending split notification`);
+    logger.debug('[DEBUG] Sending split notification');
     this.buffer._notify(
       'page_split',
       'info',
@@ -1141,8 +1146,6 @@ class VirtualPageManager {
       throw new Error('No source filename available');
     }
     
-    const fs = require('fs').promises;
-    
     try {
       // First check if file exists and is readable
       await fs.access(descriptor.sourceInfo.filename, require('fs').constants.R_OK);
@@ -1181,7 +1184,7 @@ class VirtualPageManager {
         
         if (bytesRead !== readSize) {
           // Partial read - file changed during read
-          console.warn(`Partial read: expected ${readSize}, got ${bytesRead}`);
+          logger.warn(`Partial read: expected ${readSize}, got ${bytesRead}`);
           return buffer.subarray(0, bytesRead);
         }
         
@@ -1222,8 +1225,6 @@ class VirtualPageManager {
    * Create PageInfo with enhanced line and marks support
    */
   _createPageInfo(descriptor, data) {
-    const { PageInfo } = require('./utils/page-info');
-    
     const pageInfo = new PageInfo(
       descriptor.pageId,
       descriptor.sourceType === 'original' ? descriptor.sourceInfo.fileOffset : -1,

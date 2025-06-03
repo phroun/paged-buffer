@@ -10,6 +10,7 @@ const crypto = require('crypto');
 const path = require('path');
 const { BufferUndoSystem } = require('./undo-system');
 const os = require('os');    
+const logger = require('./utils/logger');
 
 const { 
   BufferState, 
@@ -17,10 +18,9 @@ const {
 } = require('./types/buffer-types');
 
 const { NotificationType, BufferNotification } = require('./types/notifications');
-const { PageStorage } = require('./storage/page-storage');
 const { MemoryPageStorage } = require('./storage/memory-page-storage');
 const { VirtualPageManager } = require('./virtual-page-manager');
-const { LineAndMarksManager, LineOperationResult, ExtractedContent } = require('./utils/line-marks-manager');
+const { LineAndMarksManager, ExtractedContent } = require('./utils/line-marks-manager');
 
 /**
  * Tracks missing data ranges in detached buffers
@@ -213,7 +213,7 @@ class PagedBuffer {
       try {
         callback(notification);
       } catch (error) {
-        console.error('Notification callback error:', error);
+        logger.error('Notification callback error:', error);
       }
     }
   }
@@ -246,7 +246,7 @@ class PagedBuffer {
       this._notify(
         NotificationType.FILE_MODIFIED_ON_DISK,
         'info',
-        `Loaded file`,
+        'Loaded file',
         { filename, size: stats.size, state: this.state, hasUnsavedChanges: this.hasUnsavedChanges }
       );
       
@@ -275,7 +275,7 @@ class PagedBuffer {
     this._notify(
       'buffer_content_loaded',
       'info',
-      `Loaded content`,
+      'Loaded content',
       { size: this.totalSize, state: this.state, hasUnsavedChanges: this.hasUnsavedChanges }
     );
   }
@@ -299,7 +299,7 @@ class PagedBuffer {
     this._notify(
       'buffer_content_loaded',
       'info',
-      `Loaded binary content`,
+      'Loaded binary content',
       { size: this.totalSize, state: this.state, hasUnsavedChanges: this.hasUnsavedChanges }
     );
   }
@@ -420,7 +420,7 @@ class PagedBuffer {
       throw new Error(`Position ${position} is beyond end of buffer (size: ${this.totalSize})`);
     }
 
-    console.log(`[DEBUG] insertBytes called: position=${position}, dataLen=${data.length}`);
+    logger.debug(`[DEBUG] insertBytes called: position=${position}, dataLen=${data.length}`);
 
     // Capture values before execution for undo recording
     const originalPosition = position;
@@ -430,7 +430,7 @@ class PagedBuffer {
     // CRITICAL FIX: Capture marks snapshot BEFORE operation executes
     const preOpMarksSnapshot = this.undoSystem ? this.undoSystem.captureCurrentMarksState() : null;
 
-    console.log(`[DEBUG] Pre-op marks:`, preOpMarksSnapshot);
+    logger.debug('[DEBUG] Pre-op marks:', preOpMarksSnapshot);
 
     // Always use enhanced method (handles both VPM and mark updates)
     await this.lineAndMarksManager.insertBytesWithMarks(position, data, marks);
@@ -439,7 +439,7 @@ class PagedBuffer {
     this.totalSize += data.length;
     this._markAsModified();
     
-    console.log(`[DEBUG] Post-op marks:`, this.lineAndMarksManager.getAllMarks());
+    logger.debug('[DEBUG] Post-op marks:', this.lineAndMarksManager.getAllMarks());
     
     // Record the operation AFTER executing it, with pre-operation snapshot
     if (this.undoSystem) {
@@ -468,7 +468,7 @@ class PagedBuffer {
       end = this.totalSize;
     }
 
-    console.log(`[DEBUG] deleteBytes called: start=${start}, end=${end}, reportMarks=${reportMarks}`);
+    logger.debug(`[DEBUG] deleteBytes called: start=${start}, end=${end}, reportMarks=${reportMarks}`);
 
     // Capture values before execution for undo recording
     const originalStart = start;
@@ -477,7 +477,7 @@ class PagedBuffer {
     // CRITICAL FIX: Capture marks snapshot BEFORE operation executes
     const preOpMarksSnapshot = this.undoSystem ? this.undoSystem.captureCurrentMarksState() : null;
 
-    console.log(`[DEBUG] Pre-delete marks:`, preOpMarksSnapshot);
+    logger.debug('[DEBUG] Pre-delete marks:', preOpMarksSnapshot);
 
     // Always use enhanced method (handles both VPM and mark updates)
     const result = await this.lineAndMarksManager.deleteBytesWithMarks(start, end, reportMarks);
@@ -486,7 +486,7 @@ class PagedBuffer {
     this.totalSize -= result.data.length;
     this._markAsModified();
     
-    console.log(`[DEBUG] Post-delete marks:`, this.lineAndMarksManager.getAllMarks());
+    logger.debug('[DEBUG] Post-delete marks:', this.lineAndMarksManager.getAllMarks());
     
     // Record the operation AFTER executing it, with pre-operation snapshot
     if (this.undoSystem) {
@@ -516,7 +516,7 @@ class PagedBuffer {
       throw new Error(`Position ${position} is beyond end of buffer (size: ${this.totalSize})`);
     }
 
-    console.log(`[DEBUG] overwriteBytes called: position=${position}, dataLen=${data.length}`);
+    logger.debug(`[DEBUG] overwriteBytes called: position=${position}, dataLen=${data.length}`);
 
     // Capture values before execution for undo recording
     const originalPosition = position;
@@ -745,7 +745,7 @@ class PagedBuffer {
   getState() {
     // Validate state consistency
     if (this.state === BufferState.DETACHED && this.missingDataRanges.length === 0) {
-      console.warn('Buffer marked as DETACHED but has no missing data ranges');
+      logger.warn('Buffer marked as DETACHED but has no missing data ranges');
     }
     
     return this.state;
@@ -997,7 +997,7 @@ class PagedBuffer {
     
     // Calculate maximum chunk size to prevent memory issues
     const maxChunkSize = this.pageSize * this.maxMemoryPages;
-    console.log(`Writing file with chunk size: ${maxChunkSize.toLocaleString()} bytes`);
+    logger.debug(`Writing file with chunk size: ${maxChunkSize.toLocaleString()} bytes`);
     
     // Sort missing ranges by position for proper insertion
     const sortedMissingRanges = [...this.missingDataRanges].sort((a, b) => 
@@ -1075,13 +1075,13 @@ class PagedBuffer {
           // Progress logging for large files
           if (chunkSize > 1024 * 1024) { // Log for chunks > 1MB
             const progress = ((chunkEnd - startPos) / (endPos - startPos) * 100).toFixed(1);
-            console.log(`Written ${chunkEnd.toLocaleString()} / ${endPos.toLocaleString()} bytes (${progress}%)`);
+            logger.debug(`Written ${chunkEnd.toLocaleString()} / ${endPos.toLocaleString()} bytes (${progress}%)`);
           }
         }
         
       } catch (error) {
         // Data became unavailable during save - add an emergency marker
-        console.warn(`Data unavailable for chunk ${chunkStart}-${chunkEnd}: ${error.message}`);
+        logger.warn(`Data unavailable for chunk ${chunkStart}-${chunkEnd}: ${error.message}`);
         const emergencyMarker = this._createEmergencyMissingMarker(chunkStart, chunkEnd, error.message);
         await fd.write(Buffer.from(emergencyMarker));
       }
@@ -1109,9 +1109,9 @@ class PagedBuffer {
       
       if (isOriginalFile && !options.forcePartialSave) {
         throw new Error(
-          `Refusing to save to original file path with partial data. ` +
+          'Refusing to save to original file path with partial data. ' +
           `Missing ${this.missingDataRanges.length} data range(s). ` +
-          `Use saveAs() to save to a different location, or pass forcePartialSave=true to override.`
+          'Use saveAs() to save to a different location, or pass forcePartialSave=true to override.'
         );
       }
     }
@@ -1161,7 +1161,7 @@ class PagedBuffer {
    * Enhanced save method with positional missing data markers
    * @private
    */
-  async _performSave(filename, options = {}) {
+  async _performSave(filename, _options = {}) {
     const fd = await fs.open(filename, 'w');
     
     try {

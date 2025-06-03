@@ -57,9 +57,9 @@ describe('LineAndMarksManager - Page Coordinate Marks System', () => {
 
       const allMarks = lineAndMarksManager.getAllMarks();
       expect(allMarks).toEqual([
-        { name: 'a', address: 10 },
-        { name: 'b', address: 20 },
-        { name: 'c', address: 30 }
+        ['a', 10],
+        ['b', 20],
+        ['c', 30]
       ]);
     });
 
@@ -72,9 +72,9 @@ describe('LineAndMarksManager - Page Coordinate Marks System', () => {
 
       const rangeMarks = lineAndMarksManager.getMarksInRange(10, 20);
       expect(rangeMarks).toEqual([
-        { name: 'start', address: 10 },
-        { name: 'middle', address: 15 },
-        { name: 'end', address: 20 }
+        [ 'start', 10 ],
+        [ 'middle', 15 ],
+        [ 'end', 20 ]
       ]);
     });
 
@@ -304,8 +304,8 @@ describe('LineAndMarksManager - Page Coordinate Marks System', () => {
 
       // Should report marks that were in the range
       expect(marksInfo).toEqual([
-        { name: 'consolidate1', relativeOffset: 2 }, // 12 - 10 = 2
-        { name: 'consolidate2', relativeOffset: 5 }  // 15 - 10 = 5
+        [ 'consolidate1', 2 ], // 12 - 10 = 2
+        [ 'consolidate2', 5 ]  // 15 - 10 = 5
       ]);
 
       // Marks should still exist in buffer (not removed)
@@ -326,9 +326,9 @@ describe('LineAndMarksManager - Page Coordinate Marks System', () => {
 
     test('should insert marks from relative positions', () => {
       const marks = [
-        { name: 'inserted1', relativeOffset: 0 },
-        { name: 'inserted2', relativeOffset: 5 },
-        { name: 'inserted3', relativeOffset: 10 }
+        [ 'inserted1', 0 ],
+        [ 'inserted2', 5 ],
+        [ 'inserted3', 10 ]
       ];
 
       lineAndMarksManager.insertMarksFromRelative(20, marks);
@@ -376,8 +376,8 @@ describe('LineAndMarksManager - Page Coordinate Marks System', () => {
 
       // Should return removed marks
       expect(removed).toEqual([
-        { name: 'remove1', relativeOffset: 2 },
-        { name: 'remove2', relativeOffset: 5 }
+        [ 'remove1', 2 ],
+        [ 'remove2', 5 ]
       ]);
 
       // Removed marks should be gone
@@ -483,7 +483,7 @@ describe('LineAndMarksManager - Page Coordinate Marks System', () => {
       lineAndMarksManager.setMark('test_mark', 15);
 
       // Test with marks-aware operations
-      const marks = [{ name: 'inserted_mark', relativeOffset: 3 }];
+      const marks = [[ 'inserted_mark', 3 ]];
       await buffer.insertBytes(10, Buffer.from('NEW '), marks);
 
       expect(lineAndMarksManager.getMark('test_mark')).toBe(19); // Shifted by 4
@@ -496,7 +496,7 @@ describe('LineAndMarksManager - Page Coordinate Marks System', () => {
       const result = await buffer.deleteBytes(10, 20, true); // Report marks
       
       expect(result.marks).toEqual([
-        { name: 'report_test', relativeOffset: 5 } // 15 - 10 = 5
+        [ 'report_test', 5 ] // 15 - 10 = 5
       ]);
       // Mark should be consolidated to deletion start, not removed
       expect(lineAndMarksManager.getMark('report_test')).toBe(10);
@@ -566,8 +566,8 @@ describe('LineAndMarksManager - Page Coordinate Marks System', () => {
       const line1 = lineAndMarksManager.getLineInfo(1);
       const line2 = lineAndMarksManager.getLineInfo(2);
 
-      expect(line1.marks).toContainEqual({name: 'line1_mark', address: 3});
-      expect(line2.marks).toContainEqual({name: 'line2_mark', address: 10});
+      expect(line1.marks).toContainEqual([ 'line1_mark', 3 ]);
+      expect(line2.marks).toContainEqual([ 'line2_mark', 10 ]);
     });
   });
 

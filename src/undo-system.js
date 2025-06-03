@@ -5,7 +5,7 @@
  */
 
 const { BufferOperation, OperationType } = require('./buffer-operation');
-const { BufferState } = require('./types/buffer-types');
+const logger = require('./utils/logger');
 
 /**
  * Groups related operations together for undo/redo
@@ -181,7 +181,7 @@ class BufferUndoSystem {
     try {
       return this.buffer.lineAndMarksManager.getAllMarks();
     } catch (error) {
-      console.warn('Failed to capture current marks state:', error.message);
+      logger.warn('Failed to capture current marks state:', error.message);
       return [];
     }
   }
@@ -318,7 +318,7 @@ class BufferUndoSystem {
         const lineCount = this.buffer.lineAndMarksManager.getTotalLineCount();
         newGroup.setLinesSnapshot(lineCount);
       } catch (error) {
-        console.warn('Failed to capture line count snapshot:', error.message);
+        logger.warn('Failed to capture line count snapshot:', error.message);
       }
     }
     
@@ -387,7 +387,7 @@ class BufferUndoSystem {
         const lineCount = this.buffer.lineAndMarksManager.getTotalLineCount();
         this.activeTransaction.setInitialState(allMarks, lineCount);
       } catch (error) {
-        console.warn('Failed to capture initial transaction state:', error.message);
+        logger.warn('Failed to capture initial transaction state:', error.message);
       }
     }
   }
@@ -538,7 +538,7 @@ class BufferUndoSystem {
         try {
           currentMarksSnapshot = this.buffer.lineAndMarksManager.getAllMarks();
         } catch (error) {
-          console.warn('Failed to capture current marks state for redo:', error.message);
+          logger.warn('Failed to capture current marks state for redo:', error.message);
         }
       }
       
@@ -573,34 +573,34 @@ class BufferUndoSystem {
       return;
     }
     
-    console.log(`[DEBUG] Restoring ${marksSnapshot.length} marks from snapshot`);
+    logger.debug(`[DEBUG] Restoring ${marksSnapshot.length} marks from snapshot`);
     
     try {
       // Clear all current marks
       const currentMarks = this.buffer.lineAndMarksManager.getAllMarks();
-      console.log(`[DEBUG] Current marks before clear:`, currentMarks);
+      logger.debug('[DEBUG] Current marks before clear:', currentMarks);
       
       this.buffer.lineAndMarksManager.clearAllMarks();
       
       // Restore marks using virtual addresses from snapshot
       for (const mark of marksSnapshot) {
-        console.log(`[DEBUG] Restoring mark ${mark.name} at address ${mark.address}`);
+        logger.debug(`[DEBUG] Restoring mark ${mark[0]} at address ${mark[1]}`);
         
         // Validate that the address is still within bounds
         const totalSize = this.buffer.getTotalSize();
-        if (mark.address >= 0 && mark.address <= totalSize) {
-          this.buffer.lineAndMarksManager.setMark(mark.name, mark.address);
-          console.log(`[DEBUG] Successfully restored mark ${mark.name}`);
+        if (mark[1] >= 0 && mark[1] <= totalSize) {
+          this.buffer.lineAndMarksManager.setMark(mark[0], mark[1]);
+          logger.debug(`[DEBUG] Successfully restored mark ${mark[0]}`);
         } else {
-          console.log(`[DEBUG] Skipping mark ${mark.name} - address ${mark.address} out of bounds (buffer size: ${totalSize})`);
+          logger.debug(`[DEBUG] Skipping mark ${mark[0]} - address ${mark[1]} out of bounds (buffer size: ${totalSize})`);
         }
       }
       
       const restoredMarks = this.buffer.lineAndMarksManager.getAllMarks();
-      console.log(`[DEBUG] Marks after restoration:`, restoredMarks);
+      logger.debug('[DEBUG] Marks after restoration:', restoredMarks);
       
     } catch (error) {
-      console.warn('Failed to restore marks state:', error.message);
+      logger.warn('Failed to restore marks state:', error.message);
     }
   }
 

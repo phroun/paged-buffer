@@ -115,82 +115,9 @@ class PageInfo {
    * @param {number} deletedBytes - Number of bytes deleted
    * @param {Buffer} insertedData - Data that was inserted
    */
-  updateAfterModification(offset, deletedBytes, insertedData) {
+  updateAfterModification(_offset, _deletedBytes, _insertedData) {
     // Invalidate cache - we'll rebuild on next access
     this.linesCacheValid = false;
-  }
-
-  // =================== LEGACY MARKS METHODS (NO-OP) ===================
-  // These methods are kept for compatibility but do nothing since marks
-  // are now handled globally by the page coordinate system
-
-  /**
-   * Legacy method - no longer used (marks handled globally)
-   * @deprecated
-   */
-  setMark(markName, pageOffset, virtualAddress) {
-    // No-op - marks are handled globally now
-  }
-
-  /**
-   * Legacy method - no longer used (marks handled globally)
-   * @deprecated
-   */
-  removeMark(markName) {
-    // No-op - marks are handled globally now
-    return false;
-  }
-
-  /**
-   * Legacy method - no longer used (marks handled globally)
-   * @deprecated
-   */
-  getMark(markName) {
-    // No-op - marks are handled globally now
-    return null;
-  }
-
-  /**
-   * Legacy method - no longer used (marks handled globally)
-   * @deprecated
-   */
-  getAllMarks() {
-    // No-op - marks are handled globally now
-    return [];
-  }
-
-  /**
-   * Legacy method - no longer used (marks handled globally)
-   * @deprecated
-   */
-  getMarksInRange(startOffset, endOffset) {
-    // No-op - marks are handled globally now
-    return [];
-  }
-
-  /**
-   * Legacy method - no longer used (marks handled globally)
-   * @deprecated
-   */
-  updateMarkVirtualAddresses(pageVirtualStart) {
-    // No-op - marks are handled globally now
-  }
-
-  /**
-   * Legacy method - no longer used (marks handled globally)
-   * @deprecated
-   */
-  extractMarksFromRange(startOffset, endOffset) {
-    // No-op - marks are handled globally now
-    return [];
-  }
-
-  /**
-   * Legacy method - no longer used (marks handled globally)
-   * @deprecated
-   */
-  insertMarksFromRelative(insertOffset, marks, pageVirtualStart) {
-    // No-op - marks are handled globally now
   }
 
   /**

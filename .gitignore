@@ -76,6 +76,7 @@ Thumbs.db
 
 # Documentation generated files
 reference/
+reference/*
 
 # Package manager lock files (choose one)
 # Uncomment the one you use:

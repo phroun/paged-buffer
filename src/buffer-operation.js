@@ -187,7 +187,7 @@ class BufferOperation {
     
     // Check type compatibility for grouping
     return this._areOperationsCompatible(this.type, other.type);
-  };
+  }
   
   /**
    * Check if two operation types are compatible for merging

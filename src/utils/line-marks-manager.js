@@ -5,6 +5,20 @@
  * @version 2.1.1 - Fixed mark update logic for deletions and page operations
  */
 
+const logger = require('./logger');
+
+/**
+ * @typedef {Array<string|number>} MarkTuple
+ * @property {string} 0 - The name of the mark.
+ * @property {number} 1 - The absolute address of the mark.
+ */
+
+/**
+ * @typedef {Array<string|number>} RelativeMarkTuple
+ * @property {string} 0 - The name of the mark.
+ * @property {number} 1 - The relative address of the mark.
+ */
+
 /**
  * Represents the result of line-related operations
  */
@@ -37,8 +51,8 @@ class LineAndMarksManager {
     this.vpm = virtualPageManager;
     
     // Page coordinate marks storage (global only)
-    this.globalMarks = new Map();    // markName -> [pageId, offset]
-    this.pageToMarks = new Map();    // pageId -> Set<markName> (for performance)
+    this.globalMarks = new Map(); // markName -> [pageId, offset]
+    this.pageToMarks = new Map(); // pageId -> Set<markName> (for performance)
   }
 
   // =================== INTERNAL COORDINATE METHODS ===================
@@ -179,7 +193,7 @@ class LineAndMarksManager {
     // Find marks that need to move to the new page
     for (const markName of markNames) {
       const coord = this.globalMarks.get(markName);
-      const [pageId, offset] = coord;
+      const [_pageId, offset] = coord;
       
       if (offset >= splitOffset) {
         marksToMove.push(markName);
@@ -189,8 +203,8 @@ class LineAndMarksManager {
     // Move marks to new page
     for (const markName of marksToMove) {
       const coord = this.globalMarks.get(markName);
-      coord[0] = newPageId;           // Update pageId
-      coord[1] -= splitOffset;        // Adjust offset
+      coord[0] = newPageId; // Update pageId
+      coord[1] -= splitOffset; // Adjust offset
       
       // Update page index
       this.pageToMarks.get(originalPageId).delete(markName);
@@ -214,8 +228,8 @@ class LineAndMarksManager {
     // Move all marks from absorbed page to target page
     for (const markName of markNames) {
       const coord = this.globalMarks.get(markName);
-      coord[0] = targetPageId;                    // Update pageId
-      coord[1] = insertOffset + coord[1];         // Adjust offset
+      coord[0] = targetPageId; // Update pageId
+      coord[1] = insertOffset + coord[1]; // Adjust offset
       
       // Update page index
       if (!this.pageToMarks.has(targetPageId)) {
@@ -353,7 +367,7 @@ class LineAndMarksManager {
    * Get all marks between two virtual addresses
    * @param {number} startAddress - Start address (inclusive)
    * @param {number} endAddress - End address (inclusive)
-   * @returns {Array<{name: string, address: number}>} - Marks in range
+   * @returns {Array<MarkTuple>} - Name and absolute address of each mark
    */
   getMarksInRange(startAddress, endAddress) {
     const result = [];
@@ -362,7 +376,7 @@ class LineAndMarksManager {
       try {
         const virtualAddress = this._pageCoordToVirtual(coord[0], coord[1]);
         if (virtualAddress >= startAddress && virtualAddress <= endAddress) {
-          result.push({ name: markName, address: virtualAddress });
+          result.push([markName, virtualAddress]);
         }
       } catch (error) {
         // Skip orphaned marks
@@ -370,12 +384,12 @@ class LineAndMarksManager {
       }
     }
     
-    return result.sort((a, b) => a.address - b.address);
+    return result.sort((a, b) => a[1] - b[1]);
   }
 
   /**
    * Get all marks in the buffer
-   * @returns {Array<{name: string, address: number}>} - All marks
+   * @returns {Array<MarkTuple>} - Name and absolute address of all marks
    */
   getAllMarks() {
     const result = [];
@@ -383,14 +397,14 @@ class LineAndMarksManager {
     for (const [markName, coord] of this.globalMarks) {
       try {
         const virtualAddress = this._pageCoordToVirtual(coord[0], coord[1]);
-        result.push({ name: markName, address: virtualAddress });
+        result.push([markName, virtualAddress]);
       } catch (error) {
         // Skip orphaned marks
         continue;
       }
     }
     
-    return result.sort((a, b) => a.address - b.address);
+    return result.sort((a, b) => a[1] - b[1]);
   }
 
   /**
@@ -399,7 +413,7 @@ class LineAndMarksManager {
    * but does NOT remove the marks - they get consolidated to deletion start
    * @param {number} startAddress - Start address
    * @param {number} endAddress - End address
-   * @returns {Array<{name: string, relativeOffset: number}>} - Mark info for deleted content
+   * @returns {Array<RelativeMarkTuple>} - Relative mark info for deleted content
    */
   getMarksInDeletedContent(startAddress, endAddress) {
     const marksInfo = [];
@@ -408,10 +422,7 @@ class LineAndMarksManager {
       try {
         const virtualAddress = this._pageCoordToVirtual(coord[0], coord[1]);
         if (virtualAddress >= startAddress && virtualAddress < endAddress) {
-          marksInfo.push({
-            name: markName,
-            relativeOffset: virtualAddress - startAddress
-          });
+          marksInfo.push([markName, virtualAddress - startAddress]);
         }
       } catch (error) {
         // Skip orphaned marks
@@ -419,7 +430,7 @@ class LineAndMarksManager {
       }
     }
 
-    return marksInfo.sort((a, b) => a.relativeOffset - b.relativeOffset);
+    return marksInfo.sort((a, b) => a[1] - b[1]);
   }
 
   /**
@@ -427,7 +438,7 @@ class LineAndMarksManager {
    * This actually removes marks from the buffer - used when marks should disappear
    * @param {number} startAddress - Start address
    * @param {number} endAddress - End address
-   * @returns {Array<{name: string, relativeOffset: number}>} - Removed marks
+   * @returns {Array<RelativeMarkTuple>} - Relative info for removed marks
    */
   removeMarksFromRange(startAddress, endAddress) {
     const removed = [];
@@ -437,10 +448,7 @@ class LineAndMarksManager {
       try {
         const virtualAddress = this._pageCoordToVirtual(coord[0], coord[1]);
         if (virtualAddress >= startAddress && virtualAddress < endAddress) {
-          removed.push({
-            name: markName,
-            relativeOffset: virtualAddress - startAddress
-          });
+          removed.push([markName, virtualAddress - startAddress]);
           marksToRemove.push(markName);
         }
       } catch (error) {
@@ -454,18 +462,18 @@ class LineAndMarksManager {
       this.removeMark(markName);
     }
 
-    return removed.sort((a, b) => a.relativeOffset - b.relativeOffset);
+    return removed.sort((a, b) => a[1] - b[1]);
   }
 
   /**
    * Insert marks from relative positions (for insert operations)
    * @param {number} insertAddress - Address where content was inserted
-   * @param {Array<{name: string, relativeOffset: number}>} marks - Marks to insert
+   * @param {Array<RelativeMarkTuple>} marks - Relative marks to insert
    */
   insertMarksFromRelative(insertAddress, marks) {
     for (const markData of marks) {
-      const virtualAddress = insertAddress + markData.relativeOffset;
-      this.setMark(markData.name, virtualAddress);
+      const virtualAddress = insertAddress + markData[1];
+      this.setMark(markData[0], virtualAddress);
     }
   }
 
@@ -546,11 +554,11 @@ class LineAndMarksManager {
    * CORRECTED: Enhanced insertBytes - handles marks correctly with page operations
    * @param {number} position - Insert position
    * @param {Buffer} data - Data to insert
-   * @param {Array<{name: string, relativeOffset: number}>} marks - Marks to insert
+   * @param {Array<RelativeMarkTuple>} marks -Relative marks to insert
    */
   async insertBytesWithMarks(position, data, marks = []) {
-    console.log(`[DEBUG] insertBytesWithMarks: position=${position}, dataLen=${data.length}`);
-    console.log(`[DEBUG] Marks before operation:`, this.getAllMarks());
+    logger.debug(`[DEBUG] insertBytesWithMarks: position=${position}, dataLen=${data.length}`);
+    logger.debug('[DEBUG] Marks before operation:', this.getAllMarks());
     
     // STEP 1: Capture marks that need to be shifted (AFTER insertion point, not AT)
     const marksToShift = [];
@@ -566,12 +574,12 @@ class LineAndMarksManager {
       }
     }
     
-    console.log(`[DEBUG] Marks to shift:`, marksToShift);
+    logger.debug('[DEBUG] Marks to shift:', marksToShift);
     
     // STEP 2: Let VPM handle the insertion first (including any page splits)
     await this.vpm.insertAt(position, data);
     
-    console.log(`[DEBUG] Marks after VPM insertAt:`, this.getAllMarks());
+    logger.debug('[DEBUG] Marks after VPM insertAt:', this.getAllMarks());
     
     // STEP 3: Now update the captured marks to their new positions
     for (const markInfo of marksToShift) {
@@ -579,16 +587,16 @@ class LineAndMarksManager {
       try {
         this.setMark(markInfo.name, newPos);
       } catch (error) {
-        console.warn(`Failed to update mark ${markInfo.name} to position ${newPos}: ${error.message}`);
+        logger.warn(`Failed to update mark ${markInfo.name} to position ${newPos}: ${error.message}`);
       }
     }
     
-    console.log(`[DEBUG] Marks after shifting:`, this.getAllMarks());
+    logger.debug('[DEBUG] Marks after shifting:', this.getAllMarks());
     
     // STEP 4: Insert new marks
     if (marks.length > 0) {
       this.insertMarksFromRelative(position, marks);
-      console.log(`[DEBUG] Marks after inserting new marks:`, this.getAllMarks());
+      logger.debug('[DEBUG] Marks after inserting new marks:', this.getAllMarks());
     }
   }
 
@@ -600,25 +608,25 @@ class LineAndMarksManager {
    * @returns {Promise<ExtractedContent>} - Deleted data with optional marks report
    */
   async deleteBytesWithMarks(start, end, reportMarks = false) {
-    console.log(`[DEBUG] deleteBytesWithMarks: start=${start}, end=${end}, reportMarks=${reportMarks}`);
-    console.log(`[DEBUG] Marks before operation:`, this.getAllMarks());
+    logger.debug(`[DEBUG] deleteBytesWithMarks: start=${start}, end=${end}, reportMarks=${reportMarks}`);
+    logger.debug('[DEBUG] Marks before operation:', this.getAllMarks());
     
     // STEP 1: If requested, get info about marks in the deleted content (for paste operations)
     let marksInDeletedContent = [];
     if (reportMarks) {
       marksInDeletedContent = this.getMarksInDeletedContent(start, end);
-      console.log(`[DEBUG] Marks in deleted content (for reporting):`, marksInDeletedContent);
+      logger.debug('[DEBUG] Marks in deleted content (for reporting):', marksInDeletedContent);
     }
     
     // STEP 2: Update marks for the content change (this will move marks in deletion range to deletion start)
     this.updateMarksAfterModification(start, end - start, 0);
     
-    console.log(`[DEBUG] Marks after consolidating to deletion start:`, this.getAllMarks());
+    logger.debug('[DEBUG] Marks after consolidating to deletion start:', this.getAllMarks());
     
     // STEP 3: Let VPM handle the actual deletion (VPM will handle any page structure changes)
     const deletedData = await this.vpm.deleteRange(start, end);
     
-    console.log(`[DEBUG] Marks after VPM deleteRange:`, this.getAllMarks());
+    logger.debug('[DEBUG] Marks after VPM deleteRange:', this.getAllMarks());
     
     // Return deleted data with marks report (if requested)
     return new ExtractedContent(deletedData, marksInDeletedContent);
@@ -628,7 +636,7 @@ class LineAndMarksManager {
    * Enhanced overwriteBytes with marks support
    * @param {number} position - Overwrite position
    * @param {Buffer} data - New data
-   * @param {Array<{name: string, relativeOffset: number}>} marks - Marks to insert
+   * @param {Array<RelativeMarkTuple>} marks - Relative marks to insert
    * @returns {Promise<ExtractedContent>} - Overwritten data with marks info
    */
   async overwriteBytesWithMarks(position, data, marks = []) {
@@ -636,8 +644,8 @@ class LineAndMarksManager {
     const originalSize = endPosition - position;
     const netSizeChange = data.length - originalSize;
     
-    console.log(`[DEBUG] overwriteBytesWithMarks: position=${position}, dataLen=${data.length}, originalSize=${originalSize}, netChange=${netSizeChange}`);
-    console.log(`[DEBUG] Marks before operation:`, this.getAllMarks());
+    logger.debug(`[DEBUG] overwriteBytesWithMarks: position=${position}, dataLen=${data.length}, originalSize=${originalSize}, netChange=${netSizeChange}`);
+    logger.debug('[DEBUG] Marks before operation:', this.getAllMarks());
     
     // Get overwritten data before modification
     const overwrittenData = await this.vpm.readRange(position, endPosition);
@@ -670,13 +678,13 @@ class LineAndMarksManager {
       this.updateMarksAfterModification(position + data.length, originalSize - data.length, 0);
     }
     
-    console.log(`[DEBUG] Marks after consolidation, before VPM:`, this.getAllMarks());
+    logger.debug('[DEBUG] Marks after consolidation, before VPM:', this.getAllMarks());
     
     // Let VPM handle the actual overwrite (VPM will handle any page structure changes)
     await this.vpm.deleteRange(position, endPosition);
     await this.vpm.insertAt(position, data);
     
-    console.log(`[DEBUG] Marks after VPM operations:`, this.getAllMarks());
+    logger.debug('[DEBUG] Marks after VPM operations:', this.getAllMarks());
     
     // Update marks that were after the overwrite region
     for (const markInfo of marksToShift) {
@@ -684,14 +692,14 @@ class LineAndMarksManager {
       try {
         this.setMark(markInfo.name, newPos);
       } catch (error) {
-        console.warn(`Failed to update mark ${markInfo.name} to position ${newPos}: ${error.message}`);
+        logger.warn(`Failed to update mark ${markInfo.name} to position ${newPos}: ${error.message}`);
       }
     }
     
     // Insert new marks
     if (marks.length > 0) {
       this.insertMarksFromRelative(position, marks);
-      console.log(`[DEBUG] Marks after inserting new marks:`, this.getAllMarks());
+      logger.debug('[DEBUG] Marks after inserting new marks:', this.getAllMarks());
     }
     
     return new ExtractedContent(overwrittenData, marksInOverwrittenContent);
@@ -708,18 +716,18 @@ class LineAndMarksManager {
     const virtualEnd = virtualStart + deletedBytes;
     const netChange = insertedBytes - deletedBytes;
     
-    console.log(`[DEBUG] updateMarksAfterModification: start=${virtualStart}, deleted=${deletedBytes}, inserted=${insertedBytes}, netChange=${netChange}`);
+    logger.debug(`[DEBUG] updateMarksAfterModification: start=${virtualStart}, deleted=${deletedBytes}, inserted=${insertedBytes}, netChange=${netChange}`);
     
     // Create a list of marks to update (avoid modifying map during iteration)
     const marksToUpdate = [];
     for (const [markName, coord] of this.globalMarks) {
       try {
         const markVirtualPos = this._pageCoordToVirtual(coord[0], coord[1]);
-        marksToUpdate.push({ name: markName, virtualPos: markVirtualPos, coord });
-        console.log(`[DEBUG] Mark ${markName} at position ${markVirtualPos}`);
+        marksToUpdate.push({ name: markName, virtualPos: markVirtualPos, coord }); // bespoke three part object for this task
+        logger.debug(`[DEBUG] Mark ${markName} at position ${markVirtualPos}`);
       } catch (error) {
         // Mark coordinate is invalid - skip for now, don't remove yet
-        console.warn(`Mark ${markName} has invalid coordinates, skipping update`);
+        logger.warn(`Mark ${markName} has invalid coordinates, skipping update`);
         continue;
       }
     }
@@ -730,45 +738,45 @@ class LineAndMarksManager {
       
       if (virtualPos < virtualStart) {
         // Mark before modification - no change
-        console.log(`[DEBUG] Mark ${name}: before modification, no change`);
+        logger.debug(`[DEBUG] Mark ${name}: before modification, no change`);
         continue;
         
       } else if (virtualPos === virtualStart) {
         // CORRECTED: Mark exactly at modification start
         if (deletedBytes === 0) {
           // Pure insertion at this point - mark stays at insertion point
-          console.log(`[DEBUG] Mark ${name}: at insertion point, stays put`);
+          logger.debug(`[DEBUG] Mark ${name}: at insertion point, stays put`);
           continue;
         } else {
           // Deletion starting at this point - mark stays at deletion start
-          console.log(`[DEBUG] Mark ${name}: at deletion start, stays put`);
+          logger.debug(`[DEBUG] Mark ${name}: at deletion start, stays put`);
           continue;
         }
         
       } else if (deletedBytes > 0 && virtualPos > virtualStart && virtualPos < virtualEnd) {
         // CORRECTED: Mark within deleted region - move to deletion start (don't remove!)
-        console.log(`[DEBUG] Mark ${name}: within deletion range [${virtualStart}, ${virtualEnd}), moving to deletion start`);
+        logger.debug(`[DEBUG] Mark ${name}: within deletion range [${virtualStart}, ${virtualEnd}), moving to deletion start`);
         try {
           const newCoord = this._virtualToPageCoord(virtualStart);
           this._updateMarkCoordinate(name, coord, newCoord);
         } catch (error) {
-          console.warn(`Failed to move mark ${name} to deletion start: ${error.message}`);
+          logger.warn(`Failed to move mark ${name} to deletion start: ${error.message}`);
           // Don't remove the mark, leave it where it is
         }
         
       } else if (virtualPos >= virtualEnd) {
         // CORRECTED: Mark after deletion end - shift by net change
-        console.log(`[DEBUG] Mark ${name}: after modification, shifting by ${netChange} (${virtualPos} + ${netChange} = ${virtualPos + netChange})`);
+        logger.debug(`[DEBUG] Mark ${name}: after modification, shifting by ${netChange} (${virtualPos} + ${netChange} = ${virtualPos + netChange})`);
         try {
           const newVirtualPos = virtualPos + netChange;
           const newCoord = this._virtualToPageCoord(newVirtualPos);
           this._updateMarkCoordinate(name, coord, newCoord);
         } catch (error) {
-          console.warn(`Failed to shift mark ${name}: ${error.message}`);
+          logger.warn(`Failed to shift mark ${name}: ${error.message}`);
           // Don't remove the mark, leave it where it is
         }
       } else {
-        console.log(`[DEBUG] Mark ${name}: no condition matched - virtualPos=${virtualPos}, virtualStart=${virtualStart}, virtualEnd=${virtualEnd}, deletedBytes=${deletedBytes}`);
+        logger.debug(`[DEBUG] Mark ${name}: no condition matched - virtualPos=${virtualPos}, virtualStart=${virtualStart}, virtualEnd=${virtualEnd}, deletedBytes=${deletedBytes}`);
       }
     }
     
@@ -872,15 +880,12 @@ class LineAndMarksManager {
     }
 
     let currentLine = 1;
-    let currentAddress = 0;
 
     for (const descriptor of this.vpm.addressIndex.getAllPages()) {
       if (descriptor.virtualSize === 0) {
         continue;
       }
 
-      const pageStartLine = currentLine;
-      const pageStartAddress = currentAddress;
       const pageEndAddress = descriptor.virtualStart + descriptor.virtualSize;
 
       // Count lines in this page
@@ -928,7 +933,6 @@ class LineAndMarksManager {
       }
 
       currentLine += pageLinesCount;
-      currentAddress = pageEndAddress;
     }
 
     // Line not found or beyond end

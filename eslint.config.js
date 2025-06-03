@@ -63,7 +63,7 @@ module.exports = [
       'no-implied-eval': 'error',
       'no-lone-blocks': 'error',
       'no-loop-func': 'error',
-      'no-multi-spaces': 'error',
+      'no-multi-spaces': ['error', { ignoreEOLComments: true }],
       'no-multi-str': 'error',
       'no-new': 'error',
       'no-new-func': 'error',
@@ -140,6 +140,7 @@ module.exports = [
       'lib/',
       'coverage/',
       'docs/',
+      'reference/',
       '*.min.js'
     ]
   }

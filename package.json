@@ -1,6 +1,6 @@
 {
   "name": "@phroun/paged-buffer",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "High-performance buffer system for editing massive files with intelligent memory management and undo/redo capabilities",
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
@@ -14,11 +14,11 @@
     "test": "jest",
     "test:watch": "jest --watch",
     "test:coverage": "jest --coverage",
-    "lint": "eslint src/**/*.js",
-    "lint:fix": "eslint src/**/*.js --fix",
+    "lint": "eslint src/*.js src/**/*.js",
+    "lint:fix": "eslint src/*.js src/**/*.js --fix",
     "prepublishOnly": "npm run build && npm test",
     "docs": "jsdoc -c jsdoc.conf.json",
-    "clean": "rimraf lib coverage docs"
+    "clean": "rimraf lib coverage reference"
   },
   "keywords": [
     "buffer",
