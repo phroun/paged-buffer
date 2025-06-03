@@ -289,32 +289,39 @@ describe('LineAndMarksManager - Page Coordinate Marks System', () => {
     });
   });
 
-  describe('Marks Extraction and Insertion', () => {
+  describe('Marks Reporting, Insertion, and Deletion', () => {
     beforeEach(() => {
       buffer.loadContent('Hello World\nSecond line\nThird line');
     });
 
-    test('should extract marks from deleted ranges', () => {
+    test('should report marks in deleted content and consolidate them', () => {
       lineAndMarksManager.setMark('before', 5);
-      lineAndMarksManager.setMark('extract1', 12);
-      lineAndMarksManager.setMark('extract2', 15);
+      lineAndMarksManager.setMark('consolidate1', 12);
+      lineAndMarksManager.setMark('consolidate2', 15);
       lineAndMarksManager.setMark('after', 25);
 
-      const extracted = lineAndMarksManager.extractMarksFromRange(10, 20);
+      const marksInfo = lineAndMarksManager.getMarksInDeletedContent(10, 20);
 
-      // Should extract marks in range with relative offsets
-      expect(extracted).toEqual([
-        { name: 'extract1', relativeOffset: 2 }, // 12 - 10 = 2
-        { name: 'extract2', relativeOffset: 5 }  // 15 - 10 = 5
+      // Should report marks that were in the range
+      expect(marksInfo).toEqual([
+        { name: 'consolidate1', relativeOffset: 2 }, // 12 - 10 = 2
+        { name: 'consolidate2', relativeOffset: 5 }  // 15 - 10 = 5
       ]);
 
-      // Extracted marks should be removed from buffer
-      expect(lineAndMarksManager.getMark('extract1')).toBe(null);
-      expect(lineAndMarksManager.getMark('extract2')).toBe(null);
-
-      // Other marks should remain
+      // Marks should still exist in buffer (not removed)
+      expect(lineAndMarksManager.getMark('consolidate1')).toBe(12);
+      expect(lineAndMarksManager.getMark('consolidate2')).toBe(15);
       expect(lineAndMarksManager.getMark('before')).toBe(5);
       expect(lineAndMarksManager.getMark('after')).toBe(25);
+
+      // Now simulate the actual delete operation that would consolidate marks
+      lineAndMarksManager.updateMarksAfterModification(10, 10, 0); // delete 10 bytes at position 10
+
+      // After deletion, marks in deleted range should be consolidated to deletion start
+      expect(lineAndMarksManager.getMark('consolidate1')).toBe(10);
+      expect(lineAndMarksManager.getMark('consolidate2')).toBe(10);
+      expect(lineAndMarksManager.getMark('before')).toBe(5);
+      expect(lineAndMarksManager.getMark('after')).toBe(15); // shifted left by 10
     });
 
     test('should insert marks from relative positions', () => {
@@ -331,20 +338,54 @@ describe('LineAndMarksManager - Page Coordinate Marks System', () => {
       expect(lineAndMarksManager.getMark('inserted3')).toBe(30);
     });
 
-    test('should handle extract and insert cycle correctly', () => {
+    test('should handle mark reporting and restoration cycle correctly', () => {
       lineAndMarksManager.setMark('cycle1', 12);
       lineAndMarksManager.setMark('cycle2', 15);
 
-      // Extract marks
-      const extracted = lineAndMarksManager.extractMarksFromRange(10, 20);
+      // Get marks info for later restoration (without removing marks)
+      const marksInfo = lineAndMarksManager.getMarksInDeletedContent(10, 20);
 
-      // Insert them elsewhere (within buffer bounds)
+      // Simulate deletion (consolidates marks to deletion start)
+      lineAndMarksManager.updateMarksAfterModification(10, 10, 0);
+
+      // Marks should now be consolidated at deletion start
+      expect(lineAndMarksManager.getMark('cycle1')).toBe(10);
+      expect(lineAndMarksManager.getMark('cycle2')).toBe(10);
+
+      // Now simulate "paste" operation - restore marks at new location
       const totalSize = buffer.getTotalSize();
-      const insertPos = Math.min(25, totalSize); // Ensure within bounds
-      lineAndMarksManager.insertMarksFromRelative(insertPos, extracted);
+      const pastePos = Math.min(25, totalSize); // Ensure within bounds
+      
+      // First remove the consolidated marks
+      lineAndMarksManager.removeMark('cycle1');
+      lineAndMarksManager.removeMark('cycle2');
+      
+      // Then restore them at paste location using the reported info
+      lineAndMarksManager.insertMarksFromRelative(pastePos, marksInfo);
 
-      expect(lineAndMarksManager.getMark('cycle1')).toBe(insertPos + 2); // insertPos + 2
-      expect(lineAndMarksManager.getMark('cycle2')).toBe(insertPos + 5); // insertPos + 5
+      expect(lineAndMarksManager.getMark('cycle1')).toBe(pastePos + 2); // pastePos + 2
+      expect(lineAndMarksManager.getMark('cycle2')).toBe(pastePos + 5); // pastePos + 5
+    });
+
+    test('should remove marks when explicitly requested', () => {
+      lineAndMarksManager.setMark('remove1', 12);
+      lineAndMarksManager.setMark('remove2', 15);
+      lineAndMarksManager.setMark('keep', 25);
+
+      const removed = lineAndMarksManager.removeMarksFromRange(10, 20);
+
+      // Should return removed marks
+      expect(removed).toEqual([
+        { name: 'remove1', relativeOffset: 2 },
+        { name: 'remove2', relativeOffset: 5 }
+      ]);
+
+      // Removed marks should be gone
+      expect(lineAndMarksManager.getMark('remove1')).toBe(null);
+      expect(lineAndMarksManager.getMark('remove2')).toBe(null);
+      
+      // Other marks should remain
+      expect(lineAndMarksManager.getMark('keep')).toBe(25);
     });
   });
 
@@ -449,15 +490,16 @@ describe('LineAndMarksManager - Page Coordinate Marks System', () => {
       expect(lineAndMarksManager.getMark('inserted_mark')).toBe(13); // 10 + 3
     });
 
-    test('should work with extraction operations', async () => {
-      lineAndMarksManager.setMark('extract_test', 15);
+    test('should work with marks reporting operations', async () => {
+      lineAndMarksManager.setMark('report_test', 15);
 
-      const result = await buffer.deleteBytes(10, 20, true); // Extract marks
+      const result = await buffer.deleteBytes(10, 20, true); // Report marks
       
       expect(result.marks).toEqual([
-        { name: 'extract_test', relativeOffset: 5 } // 15 - 10 = 5
+        { name: 'report_test', relativeOffset: 5 } // 15 - 10 = 5
       ]);
-      expect(lineAndMarksManager.getMark('extract_test')).toBe(null);
+      // Mark should be consolidated to deletion start, not removed
+      expect(lineAndMarksManager.getMark('report_test')).toBe(10);
     });
   });
 

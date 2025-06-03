@@ -118,7 +118,7 @@ class BufferUndoSystem {
     
     // IMPROVED DEFAULTS: More conservative merge settings
     this.mergeTimeWindow = 5000;      // Keep reasonable time window for rapid typing
-    this.mergePositionWindow = 0;     // DEFAULT TO ZERO - no position-based merging
+    this.mergePositionWindow = 0;     // DEFAULT TO ZERO - merge adjacent only
     
     // State tracking
     this.isUndoing = false;

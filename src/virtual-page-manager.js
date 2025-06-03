@@ -542,15 +542,8 @@ class VirtualPageManager {
     // Invalidate cached line info since page content changed
     descriptor.lineInfoCached = false;
     
-    // REMOVED: Content-based mark updates (handled globally now)
-    // if (this.lineAndMarksManager && this.lineAndMarksManager.updateMarksAfterPageModification) {
-    //   this.lineAndMarksManager.updateMarksAfterPageModification(
-    //     descriptor.pageId,
-    //     relativePos,
-    //     0,
-    //     data.length
-    //   );
-    // }
+    // REMOVED: Content-based mark updates - these are now handled by LineAndMarksManager
+    // The LineAndMarksManager calls updateMarksAfterModification() before calling this method
     
     // Update virtual addresses in the page index
     this.addressIndex.updatePageSize(descriptor.pageId, data.length);
@@ -623,15 +616,8 @@ class VirtualPageManager {
       // Invalidate cached line info since page content changed
       descriptor.lineInfoCached = false;
       
-      // REMOVED: Content-based mark updates (handled globally now)
-      // if (this.lineAndMarksManager && this.lineAndMarksManager.updateMarksAfterPageModification) {
-      //   this.lineAndMarksManager.updateMarksAfterPageModification(
-      //     descriptor.pageId,
-      //     relativeStart,
-      //     relativeEnd - relativeStart,
-      //     0
-      //   );
-      // }
+      // REMOVED: Content-based mark updates - these are now handled by LineAndMarksManager
+      // The LineAndMarksManager calls updateMarksAfterModification() before calling this method
       
       // Update virtual size
       const sizeChange = -(relativeEnd - relativeStart);

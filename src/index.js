@@ -51,16 +51,6 @@ const {
   BufferNotification 
 } = require('./types/notifications');
 const {
-  FilesystemCompatibilityTester,
-  SmartStrategySelector
-} = require('./utils/filesystem-compatibility-test');
-const {
-  SafeFileWriter,
-  ModificationAnalyzer,
-  SaveStrategy,
-  RiskLevel
-} = require('./utils/safe-file-writer');
-const {
   OperationPosition,
   OperationDescriptor,
   OperationDistanceCalculator
@@ -96,16 +86,6 @@ module.exports = {
   OperationPosition,
   OperationDescriptor,
   OperationDistanceCalculator,
-  
-  // Safe file writing
-  SafeFileWriter,
-  ModificationAnalyzer,
-  SaveStrategy,
-  RiskLevel,
-  
-  // Filesystem compatibility
-  FilesystemCompatibilityTester,
-  SmartStrategySelector,
   
   // Notifications
   BufferNotification,

@@ -448,13 +448,13 @@ class PagedBuffer {
   }
 
   /**
-   * Enhanced deleteBytes with marks extraction
+   * Enhanced deleteBytes with marks reporting
    * @param {number} start - Start position
    * @param {number} end - End position
-   * @param {boolean} extractMarks - Whether to extract marks from deleted content
-   * @returns {Promise<Buffer|ExtractedContent>} - Deleted data with optional marks
+   * @param {boolean} reportMarks - Whether to report marks that were in deleted content
+   * @returns {Promise<Buffer|ExtractedContent>} - Deleted data with optional marks report
    */
-  async deleteBytes(start, end, extractMarks = false) {
+  async deleteBytes(start, end, reportMarks = false) {
     if (start < 0 || end < 0) {
       throw new Error('Invalid range: positions cannot be negative');  
     }
@@ -462,13 +462,13 @@ class PagedBuffer {
       throw new Error('Invalid range: start position must be less than or equal to end position');
     }
     if (start >= this.totalSize) {
-      return extractMarks ? new ExtractedContent(Buffer.alloc(0), []) : Buffer.alloc(0);
+      return reportMarks ? new ExtractedContent(Buffer.alloc(0), []) : Buffer.alloc(0);
     }
     if (end > this.totalSize) {
       end = this.totalSize;
     }
 
-    console.log(`[DEBUG] deleteBytes called: start=${start}, end=${end}`);
+    console.log(`[DEBUG] deleteBytes called: start=${start}, end=${end}, reportMarks=${reportMarks}`);
 
     // Capture values before execution for undo recording
     const originalStart = start;
@@ -479,23 +479,8 @@ class PagedBuffer {
 
     console.log(`[DEBUG] Pre-delete marks:`, preOpMarksSnapshot);
 
-    let result;
-    
-    if (extractMarks) {
-      // Extract marks before deletion when explicitly requested
-      const extractedMarks = this.lineAndMarksManager.extractMarksFromRange(start, end);
-      
-      // Perform deletion
-      const deletedData = await this.virtualPageManager.deleteRange(start, end);
-      
-      // Update remaining marks
-      this.lineAndMarksManager.updateMarksAfterModification(start, end - start, 0);
-      
-      result = new ExtractedContent(deletedData, extractedMarks);
-    } else {
-      // Basic deletion - use enhanced method (no extraction)
-      result = await this.lineAndMarksManager.deleteBytesWithMarks(start, end);
-    }
+    // Always use enhanced method (handles both VPM and mark updates)
+    const result = await this.lineAndMarksManager.deleteBytesWithMarks(start, end, reportMarks);
     
     // Update buffer state
     this.totalSize -= result.data.length;
@@ -508,9 +493,9 @@ class PagedBuffer {
       this.undoSystem.recordDelete(originalStart, result.data, timestamp, preOpMarksSnapshot);
     }
     
-    // Return appropriate format
-    if (extractMarks) {
-      return result; // ExtractedContent with marks
+    // Return appropriate format based on reportMarks parameter
+    if (reportMarks) {
+      return result; // ExtractedContent with marks info
     } else {
       return result.data; // Just the Buffer for backward compatibility
     }
