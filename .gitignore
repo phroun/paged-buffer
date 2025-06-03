@@ -75,7 +75,7 @@ ehthumbs.db
 Thumbs.db
 
 # Documentation generated files
-docs/
+reference/
 
 # Package manager lock files (choose one)
 # Uncomment the one you use:
