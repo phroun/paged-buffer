@@ -1,8 +1,8 @@
 /**
- * @fileoverview Enhanced PagedBuffer with comprehensive line tracking and named marks
- * @description High-performance buffer with line-aware operations and named marks support
+ * @fileoverview Enhanced PagedBuffer with page coordinate-based marks
+ * @description High-performance buffer with line-aware operations and page coordinate marks support
  * @author Jeffrey R. Day
- * @version 2.2.0
+ * @version 2.3.0 - Page coordinate marks system
  */
 
 const fs = require('fs').promises;
@@ -58,7 +58,7 @@ class MissingDataRange {
 }
 
 /**
- * Enhanced PagedBuffer with comprehensive line tracking and named marks
+ * Enhanced PagedBuffer with page coordinate-based marks
  */
 class PagedBuffer {
   constructor(pageSize = 64 * 1024, storage = null, maxMemoryPages = 100) {
@@ -76,7 +76,7 @@ class PagedBuffer {
     this.virtualPageManager = new VirtualPageManager(this, pageSize);
     this.virtualPageManager.maxLoadedPages = maxMemoryPages;
     
-    // Enhanced Line and Marks Manager
+    // Enhanced Line and Marks Manager with page coordinates
     this.lineAndMarksManager = new LineAndMarksManager(this.virtualPageManager);
     this.virtualPageManager.setLineAndMarksManager(this.lineAndMarksManager);
     
@@ -420,29 +420,30 @@ class PagedBuffer {
       throw new Error(`Position ${position} is beyond end of buffer (size: ${this.totalSize})`);
     }
 
+    console.log(`[DEBUG] insertBytes called: position=${position}, dataLen=${data.length}`);
+
     // Capture values before execution for undo recording
     const originalPosition = position;
     const originalData = Buffer.from(data);
     const timestamp = this.undoSystem ? this.undoSystem.getClock() : Date.now();
+    
+    // CRITICAL FIX: Capture marks snapshot BEFORE operation executes
+    const preOpMarksSnapshot = this.undoSystem ? this.undoSystem.captureCurrentMarksState() : null;
 
-    // Use enhanced VPM for insertion with marks support
-    if (marks.length > 0) {
-      await this.lineAndMarksManager.insertBytesWithMarks(position, data, marks);
-    } else {
-      await this.virtualPageManager.insertAt(position, data);
-      // Update marks and lines manually if no marks provided
-      if (this.lineAndMarksManager && this.lineAndMarksManager.updateMarksAfterModification) {
-        this.lineAndMarksManager.updateMarksAfterModification(position, 0, data.length);
-      }
-    }
+    console.log(`[DEBUG] Pre-op marks:`, preOpMarksSnapshot);
+
+    // Always use enhanced method (handles both VPM and mark updates)
+    await this.lineAndMarksManager.insertBytesWithMarks(position, data, marks);
     
     // Update buffer state
     this.totalSize += data.length;
     this._markAsModified();
     
-    // Record the operation AFTER executing it
+    console.log(`[DEBUG] Post-op marks:`, this.lineAndMarksManager.getAllMarks());
+    
+    // Record the operation AFTER executing it, with pre-operation snapshot
     if (this.undoSystem) {
-      this.undoSystem.recordInsert(originalPosition, originalData, timestamp);
+      this.undoSystem.recordInsert(originalPosition, originalData, timestamp, preOpMarksSnapshot);
     }
   }
 
@@ -467,46 +468,51 @@ class PagedBuffer {
       end = this.totalSize;
     }
 
+    console.log(`[DEBUG] deleteBytes called: start=${start}, end=${end}`);
+
     // Capture values before execution for undo recording
     const originalStart = start;
     const timestamp = this.undoSystem ? this.undoSystem.getClock() : Date.now();
+    
+    // CRITICAL FIX: Capture marks snapshot BEFORE operation executes
+    const preOpMarksSnapshot = this.undoSystem ? this.undoSystem.captureCurrentMarksState() : null;
 
-    let deletedData;
+    console.log(`[DEBUG] Pre-delete marks:`, preOpMarksSnapshot);
+
+    let result;
     
     if (extractMarks) {
-      // Use enhanced deletion with marks extraction
-      const result = await this.lineAndMarksManager.deleteBytesWithMarks(start, end);
-      deletedData = result.data;
+      // Extract marks before deletion when explicitly requested
+      const extractedMarks = this.lineAndMarksManager.extractMarksFromRange(start, end);
       
-      // Update buffer state
-      this.totalSize -= deletedData.length;
-      this._markAsModified();
+      // Perform deletion
+      const deletedData = await this.virtualPageManager.deleteRange(start, end);
       
-      // Record the operation AFTER executing it
-      if (this.undoSystem) {
-        this.undoSystem.recordDelete(originalStart, deletedData, timestamp);
-      }
+      // Update remaining marks
+      this.lineAndMarksManager.updateMarksAfterModification(start, end - start, 0);
       
-      return result;
+      result = new ExtractedContent(deletedData, extractedMarks);
     } else {
-      // Use standard VPM deletion
-      deletedData = await this.virtualPageManager.deleteRange(start, end);
-      
-      // Update marks and lines
-      if (this.lineAndMarksManager && this.lineAndMarksManager.updateMarksAfterModification) {
-        this.lineAndMarksManager.updateMarksAfterModification(start, end - start, 0);
-      }
-      
-      // Update buffer state
-      this.totalSize -= deletedData.length;
-      this._markAsModified();
-      
-      // Record the operation AFTER executing it
-      if (this.undoSystem) {
-        this.undoSystem.recordDelete(originalStart, deletedData, timestamp);
-      }
-      
-      return deletedData;
+      // Basic deletion - use enhanced method (no extraction)
+      result = await this.lineAndMarksManager.deleteBytesWithMarks(start, end);
+    }
+    
+    // Update buffer state
+    this.totalSize -= result.data.length;
+    this._markAsModified();
+    
+    console.log(`[DEBUG] Post-delete marks:`, this.lineAndMarksManager.getAllMarks());
+    
+    // Record the operation AFTER executing it, with pre-operation snapshot
+    if (this.undoSystem) {
+      this.undoSystem.recordDelete(originalStart, result.data, timestamp, preOpMarksSnapshot);
+    }
+    
+    // Return appropriate format
+    if (extractMarks) {
+      return result; // ExtractedContent with marks
+    } else {
+      return result.data; // Just the Buffer for backward compatibility
     }
   }
 
@@ -525,52 +531,44 @@ class PagedBuffer {
       throw new Error(`Position ${position} is beyond end of buffer (size: ${this.totalSize})`);
     }
 
+    console.log(`[DEBUG] overwriteBytes called: position=${position}, dataLen=${data.length}`);
+
     // Capture values before execution for undo recording
     const originalPosition = position;
     const originalData = Buffer.from(data);
     const timestamp = this.undoSystem ? this.undoSystem.getClock() : Date.now();
-
-    let overwrittenData;
     
+    // CRITICAL FIX: Capture marks snapshot BEFORE operation executes
+    const preOpMarksSnapshot = this.undoSystem ? this.undoSystem.captureCurrentMarksState() : null;
+
+    // Calculate overwrite range for undo recording
+    const overwriteEnd = Math.min(position + data.length, this.totalSize);
+    const overwrittenDataForUndo = await this.getBytes(position, overwriteEnd);
+
+    // Always use enhanced method (handles both VPM and mark updates)
+    const result = await this.lineAndMarksManager.overwriteBytesWithMarks(position, data, marks);
+    
+    // Update buffer state
+    const originalSize = overwriteEnd - position;
+    const netSizeChange = data.length - originalSize;
+    this.totalSize += netSizeChange;
+    this._markAsModified();
+    
+    // Record the operation AFTER executing it, with pre-operation snapshot
+    if (this.undoSystem) {
+      this.undoSystem.recordOverwrite(originalPosition, originalData, overwrittenDataForUndo, timestamp, preOpMarksSnapshot);
+    }
+    
+    // BACKWARD COMPATIBILITY: Return Buffer if no marks provided, ExtractedContent if marks provided
     if (marks.length > 0) {
-      // Use enhanced overwrite with marks
-      const result = await this.lineAndMarksManager.overwriteBytesWithMarks(position, data, marks);
-      overwrittenData = result.data;
-      
-      // Record the operation AFTER executing it
-      if (this.undoSystem) {
-        this.undoSystem.recordOverwrite(originalPosition, originalData, overwrittenData, timestamp);
-      }
-      
-      return result;
+      return result; // ExtractedContent
     } else {
-      // Standard overwrite
-      const endPos = Math.min(position + data.length, this.totalSize);
-      overwrittenData = await this.getBytes(position, endPos);
-      
-      // Disable undo recording temporarily for delete/insert operations
-      const undoSystem = this.undoSystem;
-      this.undoSystem = null;
-      
-      try {
-        // Perform the overwrite as delete + insert but without recording
-        await this.deleteBytes(position, endPos);
-        await this.insertBytes(position, data);
-      } finally {
-        // Restore undo system
-        this.undoSystem = undoSystem;
-      }
-      
-      // Record the operation AFTER executing it
-      if (this.undoSystem) {
-        this.undoSystem.recordOverwrite(originalPosition, originalData, overwrittenData, timestamp);
-      }
-      
-      return overwrittenData;
+      return result.data; // Buffer (legacy behavior)
     }
   }
 
   // =================== NAMED MARKS API ===================
+  // (All methods remain unchanged - they delegate to lineAndMarksManager)
 
   /**
    * Set a named mark at a byte address
@@ -614,7 +612,22 @@ class PagedBuffer {
    * @returns {Array<{name: string, address: number}>} - All marks
    */
   getAllMarks() {
-    return this.lineAndMarksManager.getAllMarks();
+    return this.lineAndMarksManager.getAllMarksForPersistence();
+  }
+
+  /**
+   * Set marks from a key-value object (for persistence)
+   * @param {Object} marksObject - Object mapping mark names to virtual addresses
+   */
+  setMarks(marksObject) {
+    this.lineAndMarksManager.setMarksFromPersistence(marksObject);
+  }
+
+  /**
+   * Clear all marks
+   */
+  clearAllMarks() {
+    this.lineAndMarksManager.clearAllMarks();
   }
 
   // =================== UNDO/REDO SYSTEM ===================
@@ -815,6 +828,7 @@ class PagedBuffer {
       // Line and marks stats
       totalLines: lmStats.totalLines,
       globalMarksCount: lmStats.globalMarksCount,
+      pageIndexSize: lmStats.pageIndexSize,
       linesMemory: vpmStats.linesMemory + lmStats.estimatedLinesCacheMemory,
       marksMemory: vpmStats.marksMemory + lmStats.estimatedMarksMemory,
       lineStartsCacheValid: lmStats.lineStartsCacheValid,
@@ -1390,7 +1404,7 @@ class PagedBuffer {
     return this.state === BufferState.CLEAN && !this.hasUnsavedChanges;
   }
 
-// =================== SYNCHRONOUS LINE OPERATIONS API ===================
+  // =================== SYNCHRONOUS LINE OPERATIONS API ===================
 
   /**
    * Get total number of lines in the buffer (SYNCHRONOUS)
@@ -1456,6 +1470,7 @@ class PagedBuffer {
   }
 
   // =================== CONVENIENCE LINE METHODS ===================
+  // (All methods remain unchanged)
 
   /**
    * Insert content with line/character position (convenience method)

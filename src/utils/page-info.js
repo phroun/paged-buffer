@@ -1,22 +1,12 @@
 /**
- * Enhanced Page metadata with simplified line tracking and marks management
+ * Enhanced Page metadata with simplified line tracking (marks moved to global system)
  */
 
 const crypto = require('crypto');
 
 /**
- * Represents a named mark within a page
- */
-class MarkInfo {
-  constructor(name, pageOffset, virtualAddress) {
-    this.name = name;
-    this.pageOffset = pageOffset; // Offset within the page
-    this.virtualAddress = virtualAddress; // Global virtual address (for external interface)
-  }
-}
-
-/**
- * Enhanced Page metadata with simplified line tracking and marks management
+ * Enhanced Page metadata with simplified line tracking and no marks management
+ * (Marks are now handled globally by the page coordinate system)
  */
 class PageInfo {
   constructor(pageId, fileOffset, originalSize, checksum = null) {
@@ -36,10 +26,6 @@ class PageInfo {
     // Simplified line tracking - just store newline positions
     this.newlinePositions = []; // Array of relative positions of \n characters
     this.linesCacheValid = false; // Whether newline positions are up to date
-    
-    // Named marks management
-    this.marks = new Map(); // markName -> MarkInfo
-    this.marksValid = true; // Whether mark positions are up to date
   }
 
   /**
@@ -64,7 +50,6 @@ class PageInfo {
     
     // Invalidate caches when data changes
     this.linesCacheValid = false;
-    this.marksValid = false; // Marks will need virtual address recalculation
     
     // Rebuild line information immediately for loaded pages
     this._rebuildLineCache(data);
@@ -133,139 +118,79 @@ class PageInfo {
   updateAfterModification(offset, deletedBytes, insertedData) {
     // Invalidate cache - we'll rebuild on next access
     this.linesCacheValid = false;
-    
-    // Update mark positions within this page
-    this._updateMarksAfterModification(offset, deletedBytes, insertedData.length);
   }
 
-  /**
-   * Update mark positions after modification within this page
-   * @param {number} offset - Offset within page where modification occurred
-   * @param {number} deletedBytes - Number of bytes deleted
-   * @param {number} insertedBytes - Number of bytes inserted
-   * @private
-   */
-  _updateMarksAfterModification(offset, deletedBytes, insertedBytes) {
-    const netChange = insertedBytes - deletedBytes;
-    const endOfDeletion = offset + deletedBytes;
-
-    for (const [markName, markInfo] of this.marks) {
-      if (markInfo.pageOffset >= endOfDeletion) {
-        // Mark is after the modification - shift by net change
-        markInfo.pageOffset += netChange;
-        this.marksValid = false; // Virtual address needs recalculation
-      } else if (markInfo.pageOffset >= offset) {
-        // Mark is within the deleted region - move to start of modification
-        markInfo.pageOffset = offset;
-        this.marksValid = false;
-      }
-      // Marks before the modification are unaffected
-    }
-  }
+  // =================== LEGACY MARKS METHODS (NO-OP) ===================
+  // These methods are kept for compatibility but do nothing since marks
+  // are now handled globally by the page coordinate system
 
   /**
-   * Add or update a named mark in this page
-   * @param {string} markName - Name of the mark
-   * @param {number} pageOffset - Offset within this page
-   * @param {number} virtualAddress - Global virtual address
+   * Legacy method - no longer used (marks handled globally)
+   * @deprecated
    */
   setMark(markName, pageOffset, virtualAddress) {
-    this.marks.set(markName, new MarkInfo(markName, pageOffset, virtualAddress));
+    // No-op - marks are handled globally now
   }
 
   /**
-   * Remove a named mark from this page
-   * @param {string} markName - Name of the mark to remove
-   * @returns {boolean} - True if mark was found and removed
+   * Legacy method - no longer used (marks handled globally)
+   * @deprecated
    */
   removeMark(markName) {
-    return this.marks.delete(markName);
+    // No-op - marks are handled globally now
+    return false;
   }
 
   /**
-   * Get a mark by name
-   * @param {string} markName - Name of the mark
-   * @returns {MarkInfo|null} - Mark info or null if not found
+   * Legacy method - no longer used (marks handled globally)
+   * @deprecated
    */
   getMark(markName) {
-    return this.marks.get(markName) || null;
+    // No-op - marks are handled globally now
+    return null;
   }
 
   /**
-   * Get all marks in this page
-   * @returns {MarkInfo[]} - Array of all marks
+   * Legacy method - no longer used (marks handled globally)
+   * @deprecated
    */
   getAllMarks() {
-    return Array.from(this.marks.values());
+    // No-op - marks are handled globally now
+    return [];
   }
 
   /**
-   * Get marks within a specific range of this page
-   * @param {number} startOffset - Start offset within page (inclusive)
-   * @param {number} endOffset - End offset within page (exclusive)
-   * @returns {MarkInfo[]} - Marks within the range
+   * Legacy method - no longer used (marks handled globally)
+   * @deprecated
    */
   getMarksInRange(startOffset, endOffset) {
-    const result = [];
-    for (const markInfo of this.marks.values()) {
-      if (markInfo.pageOffset >= startOffset && markInfo.pageOffset < endOffset) {
-        result.push(markInfo);
-      }
-    }
-    return result.sort((a, b) => a.pageOffset - b.pageOffset);
+    // No-op - marks are handled globally now
+    return [];
   }
 
   /**
-   * Update virtual addresses for all marks in this page
-   * @param {number} pageVirtualStart - Virtual start address of this page
+   * Legacy method - no longer used (marks handled globally)
+   * @deprecated
    */
   updateMarkVirtualAddresses(pageVirtualStart) {
-    for (const markInfo of this.marks.values()) {
-      markInfo.virtualAddress = pageVirtualStart + markInfo.pageOffset;
-    }
-    this.marksValid = true;
+    // No-op - marks are handled globally now
   }
 
   /**
-   * Extract marks from a range (for delete operations)
-   * @param {number} startOffset - Start offset within page
-   * @param {number} endOffset - End offset within page
-   * @returns {Array<{name: string, relativeOffset: number}>} - Extracted marks with relative positions
+   * Legacy method - no longer used (marks handled globally)
+   * @deprecated
    */
   extractMarksFromRange(startOffset, endOffset) {
-    const extracted = [];
-    const marksToRemove = [];
-
-    for (const [markName, markInfo] of this.marks) {
-      if (markInfo.pageOffset >= startOffset && markInfo.pageOffset < endOffset) {
-        extracted.push({
-          name: markName,
-          relativeOffset: markInfo.pageOffset - startOffset
-        });
-        marksToRemove.push(markName);
-      }
-    }
-
-    // Remove extracted marks from this page
-    for (const markName of marksToRemove) {
-      this.marks.delete(markName);
-    }
-
-    return extracted.sort((a, b) => a.relativeOffset - b.relativeOffset);
+    // No-op - marks are handled globally now
+    return [];
   }
 
   /**
-   * Insert marks from relative positions (for insert operations)
-   * @param {number} insertOffset - Offset within page where content was inserted
-   * @param {Array<{name: string, relativeOffset: number}>} marks - Marks to insert
-   * @param {number} pageVirtualStart - Virtual start address of this page
+   * Legacy method - no longer used (marks handled globally)
+   * @deprecated
    */
   insertMarksFromRelative(insertOffset, marks, pageVirtualStart) {
-    for (const markData of marks) {
-      const pageOffset = insertOffset + markData.relativeOffset;
-      const virtualAddress = pageVirtualStart + pageOffset;
-      this.setMark(markData.name, pageOffset, virtualAddress);
-    }
+    // No-op - marks are handled globally now
   }
 
   /**
@@ -293,19 +218,16 @@ class PageInfo {
     // Newline positions memory (much smaller than before)
     memoryUsed += this.newlinePositions.length * 4; // 4 bytes per position
     
-    // Marks memory
-    memoryUsed += this.marks.size * 64; // Rough estimate for MarkInfo objects
-    
     return {
       dataSize: this.data ? this.data.length : 0,
       newlineCount: this.newlinePositions.length,
       newlinePositionsSize: this.newlinePositions.length,
-      marksCount: this.marks.size,
+      marksCount: 0, // No marks stored here anymore
       estimatedMemoryUsed: memoryUsed,
       isLoaded: this.isLoaded,
       isDirty: this.isDirty,
       linesCacheValid: this.linesCacheValid,
-      marksValid: this.marksValid
+      marksValid: true // Always valid since no marks
     };
   }
 }
@@ -324,6 +246,15 @@ class LineInfo {
 
   get contentLength() {
     return this.endsWithNewline ? this.length - 1 : this.length;
+  }
+}
+
+// Legacy class kept for compatibility but no longer used
+class MarkInfo {
+  constructor(name, pageOffset, virtualAddress) {
+    this.name = name;
+    this.pageOffset = pageOffset;
+    this.virtualAddress = virtualAddress;
   }
 }
 

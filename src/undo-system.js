@@ -169,13 +169,32 @@ class BufferUndoSystem {
   }
 
   /**
+   * CRITICAL FIX: Capture current marks state for snapshot BEFORE any operation recording
+   * This must be called by buffer operations BEFORE they execute
+   * @returns {Array} - Current marks snapshot
+   */
+  captureCurrentMarksState() {
+    if (!this.buffer.lineAndMarksManager) {
+      return [];
+    }
+    
+    try {
+      return this.buffer.lineAndMarksManager.getAllMarks();
+    } catch (error) {
+      console.warn('Failed to capture current marks state:', error.message);
+      return [];
+    }
+  }
+
+  /**
    * Record an insert operation with enhanced tracking
    * @param {number} position - Insert position
    * @param {Buffer} data - Inserted data
    * @param {number} timestamp - Optional timestamp (defaults to current time)
+   * @param {Array} preOpMarksSnapshot - Pre-operation marks snapshot
    * @returns {BufferOperation} - The created operation
    */
-  recordInsert(position, data, timestamp = null) {
+  recordInsert(position, data, timestamp = null, preOpMarksSnapshot = null) {
     const operation = new BufferOperation(
       OperationType.INSERT, 
       position, 
@@ -185,7 +204,7 @@ class BufferUndoSystem {
     );
     
     operation.setPostExecutionPosition(position);
-    this._recordOperation(operation);
+    this._recordOperation(operation, preOpMarksSnapshot);
     return operation;
   }
 
@@ -194,9 +213,10 @@ class BufferUndoSystem {
    * @param {number} position - Delete position
    * @param {Buffer} deletedData - Data that was deleted
    * @param {number} timestamp - Optional timestamp (defaults to current time)
+   * @param {Array} preOpMarksSnapshot - Pre-operation marks snapshot
    * @returns {BufferOperation} - The created operation
    */
-  recordDelete(position, deletedData, timestamp = null) {
+  recordDelete(position, deletedData, timestamp = null, preOpMarksSnapshot = null) {
     const operation = new BufferOperation(
       OperationType.DELETE, 
       position, 
@@ -206,7 +226,7 @@ class BufferUndoSystem {
     );
     
     operation.setPostExecutionPosition(position);
-    this._recordOperation(operation);
+    this._recordOperation(operation, preOpMarksSnapshot);
     return operation;
   }
 
@@ -216,9 +236,10 @@ class BufferUndoSystem {
    * @param {Buffer} newData - New data
    * @param {Buffer} originalData - Original data that was overwritten
    * @param {number} timestamp - Optional timestamp (defaults to current time)
+   * @param {Array} preOpMarksSnapshot - Pre-operation marks snapshot
    * @returns {BufferOperation} - The created operation
    */
-  recordOverwrite(position, newData, originalData, timestamp = null) {
+  recordOverwrite(position, newData, originalData, timestamp = null, preOpMarksSnapshot = null) {
     const operation = new BufferOperation(
       OperationType.OVERWRITE, 
       position, 
@@ -228,16 +249,17 @@ class BufferUndoSystem {
     );
     
     operation.setPostExecutionPosition(position);
-    this._recordOperation(operation);
+    this._recordOperation(operation, preOpMarksSnapshot);
     return operation;
   }
 
   /**
-   * Enhanced operation recording with marks and lines tracking
+   * Enhanced operation recording with marks and lines tracking - FIXED SNAPSHOT TIMING
    * @param {BufferOperation} operation - Operation to record
+   * @param {Array} preOpMarksSnapshot - Pre-operation marks snapshot
    * @private
    */
-  _recordOperation(operation) {
+  _recordOperation(operation, preOpMarksSnapshot = null) {
     // Don't record operations during undo/redo
     if (this.isUndoing) {
       return;
@@ -276,47 +298,38 @@ class BufferUndoSystem {
             topGroup.operations.push(operation);
           }
           
-          // Update group's marks snapshot after merge
-          this._updateGroupSnapshot(topGroup);
+          // NOTE: Don't update snapshot for merged operations - keep original pre-state
           return; // Either way, we're done
         }
       }
     }
     
     // Cannot merge - create NEW group and push to stack
+    // CRITICAL FIX: Use the provided pre-operation snapshot, or capture current state
     const newGroup = new OperationGroup(this._generateGroupId());
-    newGroup.operations.push(operation);
     
-    // Capture current state snapshots
-    this._updateGroupSnapshot(newGroup);
+    // Use provided snapshot or capture current state if none provided
+    const snapshotToUse = preOpMarksSnapshot || this.captureCurrentMarksState();
+    newGroup.setMarksSnapshot(snapshotToUse);
+    
+    // Capture line count snapshot
+    if (this.buffer.lineAndMarksManager) {
+      try {
+        const lineCount = this.buffer.lineAndMarksManager.getTotalLineCount();
+        newGroup.setLinesSnapshot(lineCount);
+      } catch (error) {
+        console.warn('Failed to capture line count snapshot:', error.message);
+      }
+    }
+    
+    // Now add the operation to the group
+    newGroup.operations.push(operation);
     
     this.undoStack.push(newGroup);
     
     // Enforce maximum undo levels
     while (this.undoStack.length > this.maxUndoLevels) {
       this.undoStack.shift();
-    }
-  }
-
-  /**
-   * Update group's state snapshots
-   * @param {OperationGroup} group - Group to update
-   * @private
-   */
-  async _updateGroupSnapshot(group) {
-    if (this.buffer.lineAndMarksManager) {
-      try {
-        // Capture marks snapshot
-        const allMarks = this.buffer.lineAndMarksManager.getAllMarks();
-        group.setMarksSnapshot(allMarks);
-        
-        // Capture line count snapshot
-        const lineCount = await this.buffer.lineAndMarksManager.getTotalLineCount();
-        group.setLinesSnapshot(lineCount);
-      } catch (error) {
-        // Don't fail operation recording due to snapshot errors
-        console.warn('Failed to capture state snapshot:', error.message);
-      }
     }
   }
 
@@ -367,12 +380,12 @@ class BufferUndoSystem {
     this.activeTransaction = new OperationTransaction(name, options);
     this.activeTransaction.startTime = this.getClock();
     
-    // Capture initial state asynchronously (don't await to maintain sync API)
+    // FIXED: Capture initial state using virtual addresses BEFORE any operations
     if (this.buffer.lineAndMarksManager) {
       try {
         const allMarks = this.buffer.lineAndMarksManager.getAllMarks();
-        // Get line count synchronously if possible, otherwise skip
-        this.activeTransaction.setInitialState(allMarks, 0);
+        const lineCount = this.buffer.lineAndMarksManager.getTotalLineCount();
+        this.activeTransaction.setInitialState(allMarks, lineCount);
       } catch (error) {
         console.warn('Failed to capture initial transaction state:', error.message);
       }
@@ -398,7 +411,7 @@ class BufferUndoSystem {
       group.operations = [...this.activeTransaction.operations];
       group.isFromTransaction = true;
       
-      // Set snapshots from transaction initial state
+      // FIXED: Set snapshots using virtual addresses from transaction INITIAL state (pre-operations)
       if (this.activeTransaction.initialMarksSnapshot) {
         group.setMarksSnapshot(this.activeTransaction.initialMarksSnapshot);
       }
@@ -435,7 +448,7 @@ class BufferUndoSystem {
         await this._undoOperationVPM(operation);
       }
       
-      // Restore marks state if we have a snapshot
+      // FIXED: Restore marks state using virtual addresses
       if (this.activeTransaction.initialMarksSnapshot && this.buffer.lineAndMarksManager) {
         await this._restoreMarksState(this.activeTransaction.initialMarksSnapshot);
       }
@@ -490,7 +503,7 @@ class BufferUndoSystem {
         await this._undoOperationVPM(operation);
       }
       
-      // Restore marks state if we have a snapshot
+      // FIXED: Restore marks state using virtual addresses
       if (group.marksSnapshot && this.buffer.lineAndMarksManager) {
         await this._restoreMarksState(group.marksSnapshot);
       }
@@ -519,13 +532,25 @@ class BufferUndoSystem {
     
     this.isUndoing = true;
     try {
+      // CRITICAL FIX: Capture current marks state BEFORE redo operations
+      let currentMarksSnapshot = null;
+      if (this.buffer.lineAndMarksManager) {
+        try {
+          currentMarksSnapshot = this.buffer.lineAndMarksManager.getAllMarks();
+        } catch (error) {
+          console.warn('Failed to capture current marks state for redo:', error.message);
+        }
+      }
+      
       // Redo operations in forward order using VPM
       for (const operation of group.operations) {
         await this._redoOperationVPM(operation);
       }
       
-      // Note: After redo, marks will be naturally in their correct state
-      // due to the operations being replayed
+      // FIXED: Update the group's snapshot to current post-redo state for future undo
+      if (currentMarksSnapshot) {
+        group.setMarksSnapshot(currentMarksSnapshot);
+      }
       
       this.undoStack.push(group);
       return true;
@@ -539,8 +564,8 @@ class BufferUndoSystem {
   }
 
   /**
-   * Restore marks state from snapshot
-   * @param {Array} marksSnapshot - Marks to restore
+   * CORRECTED: Restore marks state from snapshot using virtual addresses
+   * @param {Array} marksSnapshot - Marks to restore (virtual address format)
    * @private
    */
   async _restoreMarksState(marksSnapshot) {
@@ -548,21 +573,31 @@ class BufferUndoSystem {
       return;
     }
     
+    console.log(`[DEBUG] Restoring ${marksSnapshot.length} marks from snapshot`);
+    
     try {
       // Clear all current marks
       const currentMarks = this.buffer.lineAndMarksManager.getAllMarks();
-      for (const mark of currentMarks) {
-        this.buffer.lineAndMarksManager.removeMark(mark.name);
-      }
+      console.log(`[DEBUG] Current marks before clear:`, currentMarks);
       
-      // Restore marks from snapshot
+      this.buffer.lineAndMarksManager.clearAllMarks();
+      
+      // Restore marks using virtual addresses from snapshot
       for (const mark of marksSnapshot) {
+        console.log(`[DEBUG] Restoring mark ${mark.name} at address ${mark.address}`);
+        
         // Validate that the address is still within bounds
         const totalSize = this.buffer.getTotalSize();
         if (mark.address >= 0 && mark.address <= totalSize) {
           this.buffer.lineAndMarksManager.setMark(mark.name, mark.address);
+          console.log(`[DEBUG] Successfully restored mark ${mark.name}`);
+        } else {
+          console.log(`[DEBUG] Skipping mark ${mark.name} - address ${mark.address} out of bounds (buffer size: ${totalSize})`);
         }
       }
+      
+      const restoredMarks = this.buffer.lineAndMarksManager.getAllMarks();
+      console.log(`[DEBUG] Marks after restoration:`, restoredMarks);
       
     } catch (error) {
       console.warn('Failed to restore marks state:', error.message);
@@ -584,14 +619,28 @@ class BufferUndoSystem {
           operation.preExecutionPosition,
           operation.preExecutionPosition + operation.data.length
         );
-        // Update buffer size
+        // FORCE mark update for undo
+        if (this.buffer.lineAndMarksManager) {
+          this.buffer.lineAndMarksManager.updateMarksAfterModification(
+            operation.preExecutionPosition,
+            operation.data.length,
+            0
+          );
+        }
         this.buffer.totalSize -= operation.data.length;
         break;
         
       case OperationType.DELETE:
         // Undo delete by inserting the original data back
         await vpm.insertAt(operation.preExecutionPosition, operation.originalData);
-        // Update buffer size
+        // FORCE mark update for undo
+        if (this.buffer.lineAndMarksManager) {
+          this.buffer.lineAndMarksManager.updateMarksAfterModification(
+            operation.preExecutionPosition,
+            0,
+            operation.originalData.length
+          );
+        }
         this.buffer.totalSize += operation.originalData.length;
         break;
         
@@ -602,7 +651,14 @@ class BufferUndoSystem {
           operation.preExecutionPosition + operation.data.length
         );
         await vpm.insertAt(operation.preExecutionPosition, operation.originalData);
-        // Update buffer size
+        // FORCE mark update for undo (net change)
+        if (this.buffer.lineAndMarksManager) {
+          this.buffer.lineAndMarksManager.updateMarksAfterModification(
+            operation.preExecutionPosition,
+            operation.data.length,
+            operation.originalData.length
+          );
+        }
         const sizeChange = operation.originalData.length - operation.data.length;
         this.buffer.totalSize += sizeChange;
         break;
@@ -611,16 +667,9 @@ class BufferUndoSystem {
         throw new Error(`Unknown operation type: ${operation.type}`);
     }
     
-    // REFACTORED STATE MANAGEMENT:
-    // Mark buffer as having unsaved changes (preserves data integrity state)
     this.buffer._markAsModified();
   }
 
-  /**
-   * Redo a single operation using Virtual Page Manager with enhanced tracking
-   * @param {BufferOperation} operation - Operation to redo
-   * @private
-   */
   async _redoOperationVPM(operation) {
     const vpm = this.buffer.virtualPageManager;
     
@@ -628,7 +677,14 @@ class BufferUndoSystem {
       case OperationType.INSERT:
         // Redo insert
         await vpm.insertAt(operation.preExecutionPosition, operation.data);
-        // Update buffer size
+        // FORCE mark update for redo
+        if (this.buffer.lineAndMarksManager) {
+          this.buffer.lineAndMarksManager.updateMarksAfterModification(
+            operation.preExecutionPosition,
+            0,
+            operation.data.length
+          );
+        }
         this.buffer.totalSize += operation.data.length;
         break;
         
@@ -638,7 +694,14 @@ class BufferUndoSystem {
           operation.preExecutionPosition,
           operation.preExecutionPosition + operation.originalData.length
         );
-        // Update buffer size
+        // FORCE mark update for redo
+        if (this.buffer.lineAndMarksManager) {
+          this.buffer.lineAndMarksManager.updateMarksAfterModification(
+            operation.preExecutionPosition,
+            operation.originalData.length,
+            0
+          );
+        }
         this.buffer.totalSize -= operation.originalData.length;
         break;
         
@@ -649,7 +712,14 @@ class BufferUndoSystem {
           operation.preExecutionPosition + operation.originalData.length
         );
         await vpm.insertAt(operation.preExecutionPosition, operation.data);
-        // Update buffer size
+        // FORCE mark update for redo (net change)
+        if (this.buffer.lineAndMarksManager) {
+          this.buffer.lineAndMarksManager.updateMarksAfterModification(
+            operation.preExecutionPosition,
+            operation.originalData.length,
+            operation.data.length
+          );
+        }
         const sizeChange = operation.data.length - operation.originalData.length;
         this.buffer.totalSize += sizeChange;
         break;
@@ -658,8 +728,6 @@ class BufferUndoSystem {
         throw new Error(`Unknown operation type: ${operation.type}`);
     }
     
-    // REFACTORED STATE MANAGEMENT:
-    // Mark buffer as having unsaved changes (preserves data integrity state)
     this.buffer._markAsModified();
   }
 

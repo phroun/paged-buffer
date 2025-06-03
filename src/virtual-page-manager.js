@@ -1,9 +1,9 @@
 /**
- * @fileoverview Enhanced Virtual Page Manager with Line Tracking and Marks Integration
+ * @fileoverview Enhanced Virtual Page Manager with Line Tracking, Marks Integration, and Page Merging
  * @description Handles mapping between virtual buffer addresses and physical page locations
  * while maintaining sparse, efficient access to massive files, with comprehensive line and marks support
  * @author Jeffrey R. Day
- * @version 2.0.0
+ * @version 2.1.0 - Added page merging and marks coordination
  */
 
 const fs = require('fs').promises;
@@ -73,10 +73,12 @@ class PageDescriptor {
 /**
  * Efficient B-tree-like structure for fast address lookups
  * Uses binary search for O(log n) lookups even with thousands of pages
+ * Hash map for O(1) pageId lookups
  */
 class PageAddressIndex {
   constructor() {
     this.pages = [];           // Sorted array of PageDescriptors by virtualStart
+    this.pageIdIndex = new Map(); // pageId -> PageDescriptor lookup for O(1) access
     this.totalVirtualSize = 0; // Cache of total virtual buffer size
   }
 
@@ -109,6 +111,15 @@ class PageAddressIndex {
   }
 
   /**
+   * Find page by pageId
+   * @param {string} pageId - Page ID to find
+   * @returns {PageDescriptor|null} - Page descriptor or null
+   */
+  findPageById(pageId) {
+    return this.pageIdIndex.get(pageId) || null;
+  }
+
+  /**
    * Insert a new page, maintaining sorted order
    * @param {PageDescriptor} pageDesc - Page to insert
    */
@@ -124,6 +135,7 @@ class PageAddressIndex {
     }
     
     this.pages.splice(insertIndex, 0, pageDesc);
+    this.pageIdIndex.set(pageDesc.pageId, pageDesc); // Add to hash map
     this._updateVirtualSizes();
   }
 
@@ -135,6 +147,7 @@ class PageAddressIndex {
     const index = this.pages.findIndex(p => p.pageId === pageId);
     if (index >= 0) {
       this.pages.splice(index, 1);
+      this.pageIdIndex.delete(pageId); // Remove from hash map
       this._updateVirtualSizes();
     }
   }
@@ -190,6 +203,7 @@ class PageAddressIndex {
     
     // Insert new page right after original
     this.pages.splice(pageIndex + 1, 0, newPage);
+    this.pageIdIndex.set(newPageId, newPage); // Add new page to hash map
     
     return newPage;
   }
@@ -251,11 +265,44 @@ class PageAddressIndex {
     if (expectedStart !== this.totalVirtualSize) {
       throw new Error(`Total size mismatch: expected ${expectedStart}, got ${this.totalVirtualSize}`);
     }
+    
+    // Validate hash map synchronization
+    this.validateHashMapSync();
+  }
+
+  /**
+   * Validate that hash map is synchronized with pages array
+   * @throws {Error} If synchronization is broken
+   */
+  validateHashMapSync() {
+    // Check that every page in array is in hash map
+    for (const page of this.pages) {
+      const hashMapPage = this.pageIdIndex.get(page.pageId);
+      if (hashMapPage !== page) {
+        throw new Error(`Hash map out of sync for page ${page.pageId}: expected same object reference`);
+      }
+    }
+    
+    // Check that hash map doesn't have extra entries
+    if (this.pageIdIndex.size !== this.pages.length) {
+      throw new Error(`Hash map size mismatch: ${this.pageIdIndex.size} entries vs ${this.pages.length} pages`);
+    }
+    
+    // Check that every hash map entry points to a page in the array
+    for (const [pageId, pageDesc] of this.pageIdIndex) {
+      const arrayIndex = this.pages.findIndex(p => p.pageId === pageId);
+      if (arrayIndex < 0) {
+        throw new Error(`Hash map contains orphaned entry for page ${pageId}`);
+      }
+      if (this.pages[arrayIndex] !== pageDesc) {
+        throw new Error(`Hash map entry for page ${pageId} points to wrong object`);
+      }
+    }
   }
 }
 
 /**
- * Enhanced Virtual Page Manager with Line Tracking and Marks Integration
+ * Enhanced Virtual Page Manager with Line Tracking, Marks Integration, and Page Merging
  */
 class VirtualPageManager {
   constructor(buffer, pageSize = 64 * 1024) {
@@ -276,6 +323,10 @@ class VirtualPageManager {
     // Memory management
     this.maxLoadedPages = 100;
     this.lruOrder = [];               // For eviction decisions
+    
+    // Page merging thresholds
+    this.minPageSize = Math.floor(pageSize / 4);  // Merge pages smaller than this
+    this.maxPageSize = pageSize * 2;              // Split pages larger than this
     
     // Line and Marks Manager will be set by PagedBuffer
     this.lineAndMarksManager = null;
@@ -468,8 +519,12 @@ class VirtualPageManager {
    * @param {Buffer} data - Data to insert
    */
   async insertAt(virtualPos, data) {
+    console.log(`[DEBUG] insertAt: pos=${virtualPos}, dataLen=${data.length}`);
+    
     const { descriptor, relativePos } = await this.translateAddress(virtualPos);
     const pageInfo = await this._ensurePageLoaded(descriptor);
+    
+    console.log(`[DEBUG] Page ${descriptor.pageId} current size: ${pageInfo.currentSize}, max: ${this.maxPageSize}`);
     
     // Perform the insertion within the page
     const before = pageInfo.data.subarray(0, relativePos);
@@ -487,18 +542,27 @@ class VirtualPageManager {
     // Invalidate cached line info since page content changed
     descriptor.lineInfoCached = false;
     
+    // REMOVED: Content-based mark updates (handled globally now)
+    // if (this.lineAndMarksManager && this.lineAndMarksManager.updateMarksAfterPageModification) {
+    //   this.lineAndMarksManager.updateMarksAfterPageModification(
+    //     descriptor.pageId,
+    //     relativePos,
+    //     0,
+    //     data.length
+    //   );
+    // }
+    
     // Update virtual addresses in the page index
     this.addressIndex.updatePageSize(descriptor.pageId, data.length);
-    
-    // Update global marks and line tracking
-    if (this.lineAndMarksManager && this.lineAndMarksManager.updateMarksAfterModification) {
-      this.lineAndMarksManager.updateMarksAfterModification(virtualPos, 0, data.length);
-    }
-    
+
     // Check if page needs splitting
-    if (newData.length > this.pageSize * 2) {
+    if (newData.length > this.maxPageSize) {
+      console.log(`[DEBUG] Page split needed: ${newData.length} > ${this.maxPageSize}`);
       await this._splitPage(descriptor);
     }
+    
+    // Check for potential page merging opportunities
+    await this._checkForMergeOpportunities();
     
     return data.length;
   }
@@ -524,11 +588,6 @@ class VirtualPageManager {
     
     const deletedChunks = [];
     const affectedPages = this.addressIndex.getPagesInRange(startPos, endPos);
-    
-    // Update global marks BEFORE deletion
-    if (this.lineAndMarksManager && this.lineAndMarksManager.updateMarksAfterModification) {
-      this.lineAndMarksManager.updateMarksAfterModification(startPos, endPos - startPos, 0);
-    }
     
     // Process pages in reverse order to maintain position consistency
     for (let i = affectedPages.length - 1; i >= 0; i--) {
@@ -564,13 +623,23 @@ class VirtualPageManager {
       // Invalidate cached line info since page content changed
       descriptor.lineInfoCached = false;
       
+      // REMOVED: Content-based mark updates (handled globally now)
+      // if (this.lineAndMarksManager && this.lineAndMarksManager.updateMarksAfterPageModification) {
+      //   this.lineAndMarksManager.updateMarksAfterPageModification(
+      //     descriptor.pageId,
+      //     relativeStart,
+      //     relativeEnd - relativeStart,
+      //     0
+      //   );
+      // }
+      
       // Update virtual size
       const sizeChange = -(relativeEnd - relativeStart);
       this.addressIndex.updatePageSize(descriptor.pageId, sizeChange);
     }
     
-    // Clean up empty pages
-    await this._cleanupEmptyPages();
+    // Clean up empty pages and merge small ones
+    await this._cleanupAndMergePages();
     
     return Buffer.concat(deletedChunks);
   }
@@ -639,6 +708,222 @@ class VirtualPageManager {
    */
   getTotalSize() {
     return this.addressIndex.totalVirtualSize;
+  }
+
+  // =================== PAGE MANAGEMENT ===================
+
+  /**
+   * Split a page that has grown too large
+   * @private
+   */
+  async _splitPage(descriptor) {
+    console.log(`[DEBUG] _splitPage called for page ${descriptor.pageId}`);
+    const pageInfo = this.pageCache.get(descriptor.pageId);
+    if (!pageInfo) return;
+    
+    const splitPoint = Math.floor(pageInfo.currentSize / 2);
+    const newPageId = this._generatePageId();
+    
+    // Extract marks from the second half before splitting
+    const marksInSecondHalf = pageInfo.extractMarksFromRange(splitPoint, pageInfo.currentSize);
+    
+    // Split the page in the address index
+    const newDescriptor = this.addressIndex.splitPage(
+      descriptor.pageId,
+      splitPoint,
+      newPageId
+    );
+    
+    // Create new page data
+    const newData = pageInfo.data.subarray(splitPoint);
+    const newPageInfo = this._createPageInfo(newDescriptor, newData);
+    
+    // Insert marks into the new page
+    newPageInfo.insertMarksFromRelative(0, marksInSecondHalf, newDescriptor.virtualStart);
+    
+    // Update original page data
+    const originalData = pageInfo.data.subarray(0, splitPoint);
+    pageInfo.updateData(originalData);
+    
+    // Invalidate line caches after cleanup
+    if (this.lineAndMarksManager && this.lineAndMarksManager.invalidateLineCaches) {
+      this.lineAndMarksManager.invalidateLineCaches();
+    }
+
+    // Make sure notification is called
+    console.log(`[DEBUG] Sending split notification`);
+    this.buffer._notify(
+      'page_split',
+      'info',
+      `Split page ${descriptor.pageId} at ${splitPoint} bytes`,
+      { originalPageId: descriptor.pageId, newPageId, splitPoint }
+    );
+  }
+
+  /**
+   * Check for page merging opportunities
+   * @private
+   */
+  async _checkForMergeOpportunities() {
+    const pages = this.addressIndex.getAllPages();
+    
+    for (let i = 0; i < pages.length - 1; i++) {
+      const currentPage = pages[i];
+      const nextPage = pages[i + 1];
+      
+      // Check if either page is below minimum size threshold
+      if (currentPage.virtualSize < this.minPageSize || nextPage.virtualSize < this.minPageSize) {
+        // Check if combined size would be reasonable
+        const combinedSize = currentPage.virtualSize + nextPage.virtualSize;
+        if (combinedSize <= this.maxPageSize) {
+          await this._mergePages(currentPage, nextPage);
+          return; // Only merge one pair at a time to avoid complexity
+        }
+      }
+    }
+  }
+
+  /**
+   * Merge two adjacent pages
+   * @param {PageDescriptor} firstPage - First page to merge
+   * @param {PageDescriptor} secondPage - Second page to merge (will be absorbed)
+   * @private
+   */
+  async _mergePages(firstPage, secondPage) {
+    // Always merge smaller page into larger page for consistency
+    let targetPage, absorbedPage;
+    if (firstPage.virtualSize >= secondPage.virtualSize) {
+      targetPage = firstPage;
+      absorbedPage = secondPage;
+    } else {
+      targetPage = secondPage;
+      absorbedPage = firstPage;
+    }
+    
+    // Ensure both pages are loaded
+    const targetPageInfo = await this._ensurePageLoaded(targetPage);
+    const absorbedPageInfo = await this._ensurePageLoaded(absorbedPage);
+    
+    // Calculate merge parameters
+    let insertOffset, newData;
+    
+    if (targetPage === firstPage) {
+      // Absorbing second page into first page
+      insertOffset = targetPage.virtualSize;
+      newData = Buffer.concat([targetPageInfo.data, absorbedPageInfo.data]);
+    } else {
+      // Absorbing first page into second page
+      insertOffset = 0;
+      newData = Buffer.concat([absorbedPageInfo.data, targetPageInfo.data]);
+      // Update target page's virtual start to absorbed page's start
+      targetPage.virtualStart = absorbedPage.virtualStart;
+    }
+    
+    // Update target page data
+    targetPageInfo.updateData(newData);
+    targetPage.isDirty = true;
+    targetPage.lineInfoCached = false;
+    
+    // Update marks manager if available
+    if (this.lineAndMarksManager && this.lineAndMarksManager.handlePageMerge) {
+      this.lineAndMarksManager.handlePageMerge(
+        absorbedPage.pageId,
+        targetPage.pageId,
+        insertOffset
+      );
+    }
+    
+    // Update virtual size of target page
+    this.addressIndex.updatePageSize(targetPage.pageId, absorbedPage.virtualSize);
+    
+    // Remove absorbed page
+    this.addressIndex.removePage(absorbedPage.pageId);
+    this.pageCache.delete(absorbedPage.pageId);
+    this.loadedPages.delete(absorbedPage.pageId);
+    
+    // Remove from storage if it was saved there
+    if (absorbedPage.sourceType === 'storage') {
+      try {
+        await this.buffer.storage.deletePage(absorbedPage.pageId);
+      } catch (error) {
+        // Ignore deletion errors
+      }
+    }
+    
+    this.buffer._notify(
+      'page_merged',
+      'info',
+      `Merged page ${absorbedPage.pageId} into ${targetPage.pageId}`,
+      { 
+        targetPageId: targetPage.pageId, 
+        absorbedPageId: absorbedPage.pageId,
+        newSize: targetPage.virtualSize
+      }
+    );
+  }
+
+  /**
+   * Clean up empty pages and merge small ones
+   * @private
+   */
+  async _cleanupAndMergePages() {
+    // First, handle empty pages
+    await this._cleanupEmptyPages();
+    
+    // Then check for merge opportunities
+    await this._checkForMergeOpportunities();
+  }
+
+  /**
+   * Clean up pages that have become empty
+   * @private
+   */
+  async _cleanupEmptyPages() {
+    const emptyPages = this.addressIndex.pages.filter(p => p.virtualSize === 0);
+    
+    for (const descriptor of emptyPages) {
+      // Transfer any marks from empty page to next page (at offset 0)
+      if (this.lineAndMarksManager && this.lineAndMarksManager.handlePageMerge) {
+        const nextPage = this._findNextPage(descriptor);
+        if (nextPage) {
+          this.lineAndMarksManager.handlePageMerge(
+            descriptor.pageId,
+            nextPage.pageId,
+            0
+          );
+        }
+      }
+      
+      this.addressIndex.removePage(descriptor.pageId);
+      this.pageCache.delete(descriptor.pageId);
+      this.loadedPages.delete(descriptor.pageId);
+      
+      // Remove from storage if it was saved there
+      if (descriptor.sourceType === 'storage') {
+        try {
+          await this.buffer.storage.deletePage(descriptor.pageId);
+        } catch (error) {
+          // Ignore deletion errors
+        }
+      }
+    }
+    
+    // Invalidate line caches after cleanup
+    if (this.lineAndMarksManager && this.lineAndMarksManager.invalidateLineCaches) {
+      this.lineAndMarksManager.invalidateLineCaches();
+    }
+  }
+
+  /**
+   * Find the next page after the given page
+   * @param {PageDescriptor} currentPage - Current page descriptor
+   * @returns {PageDescriptor|null} - Next page or null
+   * @private
+   */
+  _findNextPage(currentPage) {
+    const pages = this.addressIndex.getAllPages();
+    const currentIndex = pages.findIndex(p => p.pageId === currentPage.pageId);
+    return currentIndex >= 0 && currentIndex < pages.length - 1 ? pages[currentIndex + 1] : null;
   }
 
   /**
@@ -962,89 +1247,6 @@ class VirtualPageManager {
     pageInfo.isDirty = descriptor.isDirty;
     pageInfo.isLoaded = true;
     return pageInfo;
-  }
-
-  /**
-   * Split a page that has grown too large
-   * @private
-   */
-  async _splitPage(descriptor) {
-    const pageInfo = this.pageCache.get(descriptor.pageId);
-    if (!pageInfo) return;
-    
-    const splitPoint = Math.floor(pageInfo.currentSize / 2);
-    const newPageId = this._generatePageId();
-    
-    // Extract marks from the second half before splitting
-    const marksInSecondHalf = pageInfo.extractMarksFromRange(splitPoint, pageInfo.currentSize);
-    
-    // Split the page in the address index
-    const newDescriptor = this.addressIndex.splitPage(
-      descriptor.pageId,
-      splitPoint,
-      newPageId
-    );
-    
-    // Create new page data
-    const newData = pageInfo.data.subarray(splitPoint);
-    const newPageInfo = this._createPageInfo(newDescriptor, newData);
-    
-    // Insert marks into the new page
-    newPageInfo.insertMarksFromRelative(0, marksInSecondHalf, newDescriptor.virtualStart);
-    
-    // Update original page data
-    const originalData = pageInfo.data.subarray(0, splitPoint);
-    pageInfo.updateData(originalData);
-    
-    // Invalidate line info cache for both pages since they changed
-    descriptor.lineInfoCached = false;
-    newDescriptor.lineInfoCached = false;
-    
-    // Cache the new page
-    this.pageCache.set(newPageId, newPageInfo);
-    this.loadedPages.add(newPageId);
-    
-    this._updateLRU(newPageId);
-    
-    // Invalidate line caches after split
-    if (this.lineAndMarksManager && this.lineAndMarksManager.invalidateLineCaches) {
-      this.lineAndMarksManager.invalidateLineCaches();
-    }
-    
-    this.buffer._notify(
-      'page_split',
-      'info',
-      `Split page ${descriptor.pageId} at ${splitPoint} bytes`,
-      { originalPageId: descriptor.pageId, newPageId, splitPoint }
-    );
-  }
-
-  /**
-   * Clean up pages that have become empty
-   * @private
-   */
-  async _cleanupEmptyPages() {
-    const emptyPages = this.addressIndex.pages.filter(p => p.virtualSize === 0);
-    
-    for (const descriptor of emptyPages) {
-      this.addressIndex.removePage(descriptor.pageId);
-      this.pageCache.delete(descriptor.pageId);
-      this.loadedPages.delete(descriptor.pageId);
-      
-      // Remove from storage if it was saved there
-      if (descriptor.sourceType === 'storage') {
-        try {
-          await this.buffer.storage.deletePage(descriptor.pageId);
-        } catch (error) {
-          // Ignore deletion errors
-        }
-      }
-    }
-    
-    // Invalidate line caches after cleanup
-    if (this.lineAndMarksManager && this.lineAndMarksManager.invalidateLineCaches) {
-      this.lineAndMarksManager.invalidateLineCaches();
-    }
   }
 
   /**

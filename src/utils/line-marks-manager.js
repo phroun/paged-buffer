@@ -1,8 +1,8 @@
 /**
- * @fileoverview Line and Marks Manager - Simple synchronous line tracking
- * @description Manages line positions and named marks across the virtual buffer
+ * @fileoverview Line and Marks Manager - Page coordinate-based marks with synchronous line tracking
+ * @description Manages line positions and named marks using page coordinates for efficiency
  * @author Jeffrey R. Day
- * @version 1.3.0 - Removed global line cache, simple sync operations
+ * @version 2.0.0 - Page coordinate marks system with corrected update logic
  */
 
 /**
@@ -30,45 +30,743 @@ class ExtractedContent {
 }
 
 /**
- * Simple synchronous line and marks manager
+ * Page coordinate-based marks and line manager
  */
 class LineAndMarksManager {
   constructor(virtualPageManager) {
     this.vpm = virtualPageManager;
     
-    // Global marks registry (always in memory)
-    this.globalMarks = new Map(); // markName -> virtualAddress
+    // Page coordinate marks storage (global only)
+    this.globalMarks = new Map();    // markName -> [pageId, offset]
+    this.pageToMarks = new Map();    // pageId -> Set<markName> (for performance)
+  }
+
+  // =================== INTERNAL COORDINATE METHODS ===================
+
+  /**
+   * Convert virtual address to page coordinates
+   * @param {number} virtualAddress - Virtual buffer address
+   * @returns {Array} - [pageId, offset]
+   * @private
+   */
+  _virtualToPageCoord(virtualAddress) {
+    // Handle address at the very end of buffer
+    const totalSize = this.vpm.getTotalSize();
+    if (virtualAddress === totalSize && totalSize > 0) {
+      const allPages = this.vpm.addressIndex.getAllPages();
+      if (allPages.length > 0) {
+        const lastPage = allPages[allPages.length - 1];
+        return [lastPage.pageId, lastPage.virtualSize];
+      }
+    }
+    
+    const descriptor = this.vpm.addressIndex.findPageAt(virtualAddress);
+    if (!descriptor) {
+      throw new Error(`No page found for virtual address ${virtualAddress}`);
+    }
+    const offset = virtualAddress - descriptor.virtualStart;
+    return [descriptor.pageId, offset];
   }
 
   /**
-   * Update marks after a modification
+   * Convert page coordinates to virtual address
+   * @param {string} pageId - Page identifier
+   * @param {number} offset - Offset within page
+   * @returns {number} - Virtual buffer address
+   * @private
+   */
+  _pageCoordToVirtual(pageId, offset) {
+    const descriptor = this.vpm.addressIndex.pages.find(p => p.pageId === pageId);
+    if (!descriptor) {
+      throw new Error(`Page ${pageId} not found`);
+    }
+    return descriptor.virtualStart + offset;
+  }
+
+  /**
+   * Set mark using page coordinates
+   * @param {string} markName - Name of the mark
+   * @param {string} pageId - Page identifier
+   * @param {number} offset - Offset within page
+   * @private
+   */
+  _setMarkByCoord(markName, pageId, offset) {
+    // Remove from old page index if exists
+    const oldCoord = this.globalMarks.get(markName);
+    if (oldCoord) {
+      this._removeFromPageIndex(markName, oldCoord[0]);
+    }
+
+    // Set new coordinates (using array for performance)
+    this.globalMarks.set(markName, [pageId, offset]);
+    
+    // Update page index
+    if (!this.pageToMarks.has(pageId)) {
+      this.pageToMarks.set(pageId, new Set());
+    }
+    this.pageToMarks.get(pageId).add(markName);
+  }
+
+  /**
+   * Remove mark from page index
+   * @param {string} markName - Name of the mark
+   * @param {string} pageId - Page identifier
+   * @private
+   */
+  _removeFromPageIndex(markName, pageId) {
+    const markSet = this.pageToMarks.get(pageId);
+    if (markSet) {
+      markSet.delete(markName);
+      if (markSet.size === 0) {
+        this.pageToMarks.delete(pageId);
+      }
+    }
+  }
+
+  /**
+   * Get all mark names in a specific page
+   * @param {string} pageId - Page identifier
+   * @returns {Set<string>} - Set of mark names
+   * @private
+   */
+  _getMarkNamesInPage(pageId) {
+    return this.pageToMarks.get(pageId) || new Set();
+  }
+
+  /**
+   * Helper method to update mark coordinate and page index
+   * @param {string} markName - Name of the mark
+   * @param {Array} coord - Coordinate array to update in place [pageId, offset]
+   * @param {Array} newCoord - New coordinate [pageId, offset]
+   * @private
+   */
+  _updateMarkCoordinate(markName, coord, newCoord) {
+    const [oldPageId] = coord;
+    const [newPageId, newOffset] = newCoord;
+    
+    // Update the coordinate in place
+    coord[0] = newPageId;
+    coord[1] = newOffset;
+    
+    // Update page index if page changed
+    if (oldPageId !== newPageId) {
+      // Remove from old page index
+      this._removeFromPageIndex(markName, oldPageId);
+      
+      // Add to new page index
+      if (!this.pageToMarks.has(newPageId)) {
+        this.pageToMarks.set(newPageId, new Set());
+      }
+      this.pageToMarks.get(newPageId).add(markName);
+    }
+  }
+
+  // =================== PAGE STRUCTURE UPDATE OPERATIONS (Page Coordinate Based) ===================
+  // These handle page splits/merges - only called by VPM for structural changes
+
+  /**
+   * Handle page split - transfer marks to appropriate pages
+   * @param {string} originalPageId - Original page being split
+   * @param {string} newPageId - New page created from split
+   * @param {number} splitOffset - Offset within original page where split occurred
+   */
+  handlePageSplit(originalPageId, newPageId, splitOffset) {
+    const markNames = this.pageToMarks.get(originalPageId);
+    if (!markNames) return;
+    
+    const marksToMove = [];
+    
+    // Find marks that need to move to the new page
+    for (const markName of markNames) {
+      const coord = this.globalMarks.get(markName);
+      const [pageId, offset] = coord;
+      
+      if (offset >= splitOffset) {
+        marksToMove.push(markName);
+      }
+    }
+    
+    // Move marks to new page
+    for (const markName of marksToMove) {
+      const coord = this.globalMarks.get(markName);
+      coord[0] = newPageId;           // Update pageId
+      coord[1] -= splitOffset;        // Adjust offset
+      
+      // Update page index
+      this.pageToMarks.get(originalPageId).delete(markName);
+      if (!this.pageToMarks.has(newPageId)) {
+        this.pageToMarks.set(newPageId, new Set());
+      }
+      this.pageToMarks.get(newPageId).add(markName);
+    }
+  }
+
+  /**
+   * Handle page merge - transfer marks from absorbed page
+   * @param {string} absorbedPageId - Page being absorbed/deleted
+   * @param {string} targetPageId - Page absorbing the content
+   * @param {number} insertOffset - Offset in target page where absorbed content starts
+   */
+  handlePageMerge(absorbedPageId, targetPageId, insertOffset) {
+    const markNames = this.pageToMarks.get(absorbedPageId);
+    if (!markNames) return;
+    
+    // Move all marks from absorbed page to target page
+    for (const markName of markNames) {
+      const coord = this.globalMarks.get(markName);
+      coord[0] = targetPageId;                    // Update pageId
+      coord[1] = insertOffset + coord[1];         // Adjust offset
+      
+      // Update page index
+      if (!this.pageToMarks.has(targetPageId)) {
+        this.pageToMarks.set(targetPageId, new Set());
+      }
+      this.pageToMarks.get(targetPageId).add(markName);
+    }
+    
+    // Remove absorbed page from index
+    this.pageToMarks.delete(absorbedPageId);
+  }
+
+  /**
+   * Validate and clean up orphaned marks
+   * @returns {Array<string>} - Names of orphaned marks that were removed
+   */
+  validateAndCleanupMarks() {
+    const orphanedMarks = [];
+    
+    for (const [markName, coord] of this.globalMarks) {
+      const [pageId, offset] = coord;
+      
+      // Check if page still exists
+      const descriptor = this.vpm.addressIndex.pages.find(p => p.pageId === pageId);
+      if (!descriptor) {
+        orphanedMarks.push(markName);
+        continue;
+      }
+      
+      // Check if offset is within page bounds
+      if (offset > descriptor.virtualSize) {
+        // Try to move mark to next page
+        const nextPage = this._findNextPage(descriptor);
+        if (nextPage) {
+          coord[0] = nextPage.pageId;
+          coord[1] = 0; // Move to start of next page
+          
+          // Update page index
+          this._removeFromPageIndex(markName, pageId);
+          if (!this.pageToMarks.has(nextPage.pageId)) {
+            this.pageToMarks.set(nextPage.pageId, new Set());
+          }
+          this.pageToMarks.get(nextPage.pageId).add(markName);
+        } else {
+          // No next page - clamp to end of current page
+          coord[1] = Math.max(0, descriptor.virtualSize - 1);
+        }
+      }
+    }
+    
+    // Remove orphaned marks
+    for (const markName of orphanedMarks) {
+      this.removeMark(markName);
+    }
+    
+    return orphanedMarks;
+  }
+
+  /**
+   * Find the next page after the given page
+   * @param {PageDescriptor} currentPage - Current page descriptor
+   * @returns {PageDescriptor|null} - Next page or null
+   * @private
+   */
+  _findNextPage(currentPage) {
+    const pages = this.vpm.addressIndex.getAllPages();
+    const currentIndex = pages.findIndex(p => p.pageId === currentPage.pageId);
+    return currentIndex >= 0 && currentIndex < pages.length - 1 ? pages[currentIndex + 1] : null;
+  }
+
+  // =================== PUBLIC MARKS API ===================
+
+  /**
+   * Set a named mark at a virtual address
+   * @param {string} markName - Name of the mark
+   * @param {number} virtualAddress - Virtual buffer address
+   */
+  setMark(markName, virtualAddress) {
+    const totalSize = this.vpm.getTotalSize();
+    if (virtualAddress < 0 || virtualAddress > totalSize) {
+      throw new Error(`Mark address ${virtualAddress} is out of range`);
+    }
+
+    // Handle the special case of marking at the very end of the buffer
+    if (virtualAddress === totalSize) {
+      // Find the last page or create one if empty
+      const allPages = this.vpm.addressIndex.getAllPages();
+      if (allPages.length === 0) {
+        throw new Error('Cannot set mark in empty buffer with no pages');
+      }
+      
+      const lastPage = allPages[allPages.length - 1];
+      this._setMarkByCoord(markName, lastPage.pageId, lastPage.virtualSize);
+      return;
+    }
+
+    const coord = this._virtualToPageCoord(virtualAddress);
+    this._setMarkByCoord(markName, coord[0], coord[1]);
+  }
+
+  /**
+   * Get the virtual address of a named mark
+   * @param {string} markName - Name of the mark
+   * @returns {number|null} - Virtual address or null if not found
+   */
+  getMark(markName) {
+    const coord = this.globalMarks.get(markName);
+    if (!coord) return null;
+    
+    try {
+      return this._pageCoordToVirtual(coord[0], coord[1]);
+    } catch (error) {
+      // Page might have been deleted - mark is orphaned
+      return null;
+    }
+  }
+
+  /**
+   * Remove a named mark
+   * @param {string} markName - Name of the mark
+   * @returns {boolean} - True if mark was found and removed
+   */
+  removeMark(markName) {
+    const coord = this.globalMarks.get(markName);
+    if (!coord) return false;
+    
+    // Remove from page index
+    this._removeFromPageIndex(markName, coord[0]);
+    
+    // Remove from global registry
+    this.globalMarks.delete(markName);
+    
+    return true;
+  }
+
+  /**
+   * Get all marks between two virtual addresses
+   * @param {number} startAddress - Start address (inclusive)
+   * @param {number} endAddress - End address (inclusive)
+   * @returns {Array<{name: string, address: number}>} - Marks in range
+   */
+  getMarksInRange(startAddress, endAddress) {
+    const result = [];
+    
+    for (const [markName, coord] of this.globalMarks) {
+      try {
+        const virtualAddress = this._pageCoordToVirtual(coord[0], coord[1]);
+        if (virtualAddress >= startAddress && virtualAddress <= endAddress) {
+          result.push({ name: markName, address: virtualAddress });
+        }
+      } catch (error) {
+        // Skip orphaned marks
+        continue;
+      }
+    }
+    
+    return result.sort((a, b) => a.address - b.address);
+  }
+
+  /**
+   * Get all marks in the buffer
+   * @returns {Array<{name: string, address: number}>} - All marks
+   */
+  getAllMarks() {
+    const result = [];
+    
+    for (const [markName, coord] of this.globalMarks) {
+      try {
+        const virtualAddress = this._pageCoordToVirtual(coord[0], coord[1]);
+        result.push({ name: markName, address: virtualAddress });
+      } catch (error) {
+        // Skip orphaned marks
+        continue;
+      }
+    }
+    
+    return result.sort((a, b) => a.address - b.address);
+  }
+
+  /**
+   * Extract marks from a range (for delete operations)
+   * @param {number} startAddress - Start address
+   * @param {number} endAddress - End address
+   * @returns {Array<{name: string, relativeOffset: number}>} - Extracted marks
+   */
+  extractMarksFromRange(startAddress, endAddress) {
+    const extracted = [];
+    const marksToRemove = [];
+
+    for (const [markName, coord] of this.globalMarks) {
+      try {
+        const virtualAddress = this._pageCoordToVirtual(coord[0], coord[1]);
+        if (virtualAddress >= startAddress && virtualAddress < endAddress) {
+          extracted.push({
+            name: markName,
+            relativeOffset: virtualAddress - startAddress
+          });
+          marksToRemove.push(markName);
+        }
+      } catch (error) {
+        // Mark is orphaned - remove it
+        marksToRemove.push(markName);
+      }
+    }
+
+    // Remove extracted marks
+    for (const markName of marksToRemove) {
+      this.removeMark(markName);
+    }
+
+    return extracted.sort((a, b) => a.relativeOffset - b.relativeOffset);
+  }
+
+  /**
+   * Insert marks from relative positions (for insert operations)
+   * @param {number} insertAddress - Address where content was inserted
+   * @param {Array<{name: string, relativeOffset: number}>} marks - Marks to insert
+   */
+  insertMarksFromRelative(insertAddress, marks) {
+    for (const markData of marks) {
+      const virtualAddress = insertAddress + markData.relativeOffset;
+      this.setMark(markData.name, virtualAddress);
+    }
+  }
+
+  // =================== PERSISTENCE API ===================
+
+  /**
+   * Get all marks as a key-value object with virtual addresses (for persistence)
+   * @returns {Object} - Object mapping mark names to virtual addresses
+   */
+  getAllMarksForPersistence() {
+    const result = {};
+    
+    for (const [markName, coord] of this.globalMarks) {
+      try {
+        const virtualAddress = this._pageCoordToVirtual(coord[0], coord[1]);
+        result[markName] = virtualAddress;
+      } catch (error) {
+        // Skip orphaned marks
+        continue;
+      }
+    }
+    
+    return result;
+  }
+
+  /**
+   * Set marks from a key-value object (for persistence)
+   * Updates/overwrites conflicting marks, retains others
+   * @param {Object} marksObject - Object mapping mark names to virtual addresses
+   */
+  setMarksFromPersistence(marksObject) {
+    for (const [markName, virtualAddress] of Object.entries(marksObject)) {
+      if (typeof virtualAddress === 'number' && virtualAddress >= 0) {
+        try {
+          this.setMark(markName, virtualAddress);
+        } catch (error) {
+          // Skip invalid addresses
+          continue;
+        }
+      }
+    }
+  }
+
+  /**
+   * Clear all marks
+   */
+  clearAllMarks() {
+    this.globalMarks.clear();
+    this.pageToMarks.clear();
+  }
+
+  // =================== ENHANCED OPERATIONS WITH MARKS ===================
+
+  /**
+   * Enhanced getBytes that includes marks in the result
+   * @param {number} start - Start address
+   * @param {number} end - End address
+   * @param {boolean} includeMarks - Whether to include marks in result
+   * @returns {Promise<Buffer|ExtractedContent>} - Data or data with marks
+   */
+  async getBytesWithMarks(start, end, includeMarks = false) {
+    const data = await this.vpm.readRange(start, end);
+    
+    if (!includeMarks) {
+      return data;
+    }
+
+    const marks = this.getMarksInRange(start, end - 1);
+    const relativeMarks = marks.map(mark => ({
+      name: mark.name,
+      relativeOffset: mark.address - start
+    }));
+
+    return new ExtractedContent(data, relativeMarks);
+  }
+
+  /**
+   * Enhanced insertBytes that accepts marks to be inserted
+   * @param {number} position - Insert position
+   * @param {Buffer} data - Data to insert
+   * @param {Array<{name: string, relativeOffset: number}>} marks - Marks to insert
+   */
+  async insertBytesWithMarks(position, data, marks = []) {
+    console.log(`[DEBUG] insertBytesWithMarks: position=${position}, dataLen=${data.length}`);
+    console.log(`[DEBUG] Marks before operation:`, this.getAllMarks());
+    
+    // For insertions, we need to capture marks that will be shifted
+    // Save marks at and after the insertion point for restoration
+    const marksToRestore = this._captureMarksForShifting(position, position, data.length);
+    
+    // Perform the insertion through VPM (handles page structure changes and may move marks)
+    await this.vpm.insertAt(position, data);
+    
+    console.log(`[DEBUG] Marks after VPM insertAt (before restoration):`, this.getAllMarks());
+    
+    // Restore the marks we captured, applying the logical shift
+    this._restoreShiftedMarks(marksToRestore);
+    
+    console.log(`[DEBUG] Marks after restoration:`, this.getAllMarks());
+    
+    // Insert new marks
+    if (marks.length > 0) {
+      this.insertMarksFromRelative(position, marks);
+      console.log(`[DEBUG] Marks after inserting new marks:`, this.getAllMarks());
+    }
+  }
+
+  /**
+   * Enhanced deleteBytes that returns deleted data with marks
+   * @param {number} start - Start address
+   * @param {number} end - End address
+   * @returns {Promise<ExtractedContent>} - Deleted data with marks
+   */
+  async deleteBytesWithMarks(start, end) {
+    console.log(`[DEBUG] deleteBytesWithMarks: start=${start}, end=${end}`);
+    console.log(`[DEBUG] Marks before operation:`, this.getAllMarks());
+    
+    // STEP 1: Extract marks from the deletion range (these will be removed)
+    const extractedMarks = this.extractMarksFromRange(start, end);
+    console.log(`[DEBUG] Extracted marks from deletion range:`, extractedMarks);
+    
+    // STEP 2: Capture marks after the deletion range for restoration (these will be shifted)
+    const marksToRestore = this._captureMarksForShifting(end, start, -(end - start));
+    console.log(`[DEBUG] Captured marks for shifting:`, marksToRestore);
+    
+    // STEP 3: Perform deletion through VPM (handles page structure changes and may move marks)
+    const deletedData = await this.vpm.deleteRange(start, end);
+    
+    console.log(`[DEBUG] Marks after VPM deleteRange (before restoration):`, this.getAllMarks());
+    
+    // STEP 4: Restore the marks that should be shifted, applying the logical shift
+    this._restoreShiftedMarks(marksToRestore);
+    
+    console.log(`[DEBUG] Marks after restoration:`, this.getAllMarks());
+    
+    // Return deleted data (no extracted marks for basic deletion)
+    return new ExtractedContent(deletedData, []);
+  }
+
+  /**
+   * Enhanced overwriteBytes with marks support
+   * @param {number} position - Overwrite position
+   * @param {Buffer} data - New data
+   * @param {Array<{name: string, relativeOffset: number}>} marks - Marks to insert
+   * @returns {Promise<ExtractedContent>} - Overwritten data with marks
+   */
+  async overwriteBytesWithMarks(position, data, marks = []) {
+    const endPosition = Math.min(position + data.length, this.vpm.getTotalSize());
+    const originalSize = endPosition - position;
+    const netSizeChange = data.length - originalSize;
+    
+    console.log(`[DEBUG] overwriteBytesWithMarks: position=${position}, dataLen=${data.length}, originalSize=${originalSize}, netChange=${netSizeChange}`);
+    console.log(`[DEBUG] Marks before operation:`, this.getAllMarks());
+    
+    // Get overwritten data before modification
+    const overwrittenData = await this.vpm.readRange(position, endPosition);
+    
+    // Extract marks from the overwritten portion if content is shrinking
+    let overwrittenMarks = [];
+    if (data.length < originalSize) {
+      // Content is shrinking - extract marks from the removed portion
+      overwrittenMarks = this.extractMarksFromRange(position + data.length, endPosition);
+    }
+    
+    // Capture marks after the overwrite range for restoration (these may be shifted by net size change)
+    const marksToRestore = netSizeChange !== 0 ? 
+      this._captureMarksForShifting(endPosition, position, netSizeChange) : [];
+    
+    // Perform delete and insert through VPM (handles page structure changes)
+    await this.vpm.deleteRange(position, endPosition);
+    await this.vpm.insertAt(position, data);
+    
+    console.log(`[DEBUG] Marks after VPM operations (before restoration):`, this.getAllMarks());
+    
+    // Restore marks that should be shifted by the net size change
+    if (marksToRestore.length > 0) {
+      this._restoreShiftedMarks(marksToRestore);
+      console.log(`[DEBUG] Marks after restoration:`, this.getAllMarks());
+    }
+    
+    // Insert new marks
+    if (marks.length > 0) {
+      this.insertMarksFromRelative(position, marks);
+      console.log(`[DEBUG] Marks after inserting new marks:`, this.getAllMarks());
+    }
+    
+    return new ExtractedContent(overwrittenData, overwrittenMarks);
+  }
+
+  /**
+   * Capture marks that need to be restored after VPM operations
+   * @param {number} fromAddress - Address from which to capture marks (inclusive)
+   * @param {number} restoreBaseAddress - Base address for restoration calculation
+   * @param {number} shiftAmount - Amount to shift the marks during restoration
+   * @returns {Array} - Array of {name, originalAddress, newAddress} objects
+   * @private
+   */
+  _captureMarksForShifting(fromAddress, restoreBaseAddress, shiftAmount) {
+    const captured = [];
+    const totalSize = this.vpm.getTotalSize();
+    
+    for (const [markName, coord] of this.globalMarks) {
+      try {
+        const markVirtualPos = this._pageCoordToVirtual(coord[0], coord[1]);
+        
+        // Only capture marks at or after fromAddress
+        if (markVirtualPos >= fromAddress && markVirtualPos <= totalSize) {
+          const newAddress = Math.max(restoreBaseAddress, markVirtualPos + shiftAmount);
+          captured.push({
+            name: markName,
+            originalAddress: markVirtualPos,
+            newAddress: newAddress
+          });
+          
+          // Remove the mark temporarily so VPM operations don't interfere with it
+          this.removeMark(markName);
+        }
+      } catch (error) {
+        // Skip invalid marks
+        console.warn(`Skipping invalid mark ${markName}: ${error.message}`);
+      }
+    }
+    
+    return captured;
+  }
+
+  /**
+   * Restore marks that were captured before VPM operations
+   * @param {Array} capturedMarks - Array of {name, originalAddress, newAddress} objects
+   * @private
+   */
+  _restoreShiftedMarks(capturedMarks) {
+    for (const markData of capturedMarks) {
+      try {
+        // Ensure the new address is within bounds
+        const totalSize = this.vpm.getTotalSize();
+        const clampedAddress = Math.min(markData.newAddress, totalSize);
+        
+        this.setMark(markData.name, clampedAddress);
+        console.log(`[DEBUG] Restored mark ${markData.name}: ${markData.originalAddress} -> ${clampedAddress}`);
+      } catch (error) {
+        console.warn(`Failed to restore mark ${markData.name}: ${error.message}`);
+      }
+    }
+  }
+
+  /**
+   * Update marks after a modification using virtual addresses
+   * This method is now mainly used by undo/redo operations
    * @param {number} virtualStart - Start of modification
    * @param {number} deletedBytes - Bytes deleted
    * @param {number} insertedBytes - Bytes inserted
    */
   updateMarksAfterModification(virtualStart, deletedBytes, insertedBytes) {
+    const virtualEnd = virtualStart + deletedBytes;
     const netChange = insertedBytes - deletedBytes;
-    const deletionEnd = virtualStart + deletedBytes;
-
-    // Update global marks
-    for (const [markName, virtualAddress] of this.globalMarks) {
-      if (virtualAddress >= deletionEnd) {
-        // Mark is after modification - shift by net change
-        this.globalMarks.set(markName, virtualAddress + netChange);
-      } else if (virtualAddress >= virtualStart) {
-        // Mark is within deleted region - move to start of modification
-        this.globalMarks.set(markName, virtualStart);
+    
+    console.log(`[DEBUG] updateMarksAfterModification: start=${virtualStart}, deleted=${deletedBytes}, inserted=${insertedBytes}, netChange=${netChange}`);
+    
+    // Create a list of marks to update (avoid modifying map during iteration)
+    const marksToUpdate = [];
+    for (const [markName, coord] of this.globalMarks) {
+      try {
+        const markVirtualPos = this._pageCoordToVirtual(coord[0], coord[1]);
+        marksToUpdate.push({ name: markName, virtualPos: markVirtualPos, coord });
+        console.log(`[DEBUG] Mark ${markName} at position ${markVirtualPos}`);
+      } catch (error) {
+        // Mark coordinate is invalid - skip for now, don't remove yet
+        console.warn(`Mark ${markName} has invalid coordinates, skipping update`);
+        continue;
       }
-      // Marks before modification are unaffected
     }
-
-    // Invalidate page line caches
+    
+    // Update marks based on their position relative to the modification
+    for (const mark of marksToUpdate) {
+      const { name, virtualPos, coord } = mark;
+      
+      if (virtualPos < virtualStart) {
+        // Mark before modification - no change
+        console.log(`[DEBUG] Mark ${name}: before modification, no change`);
+        continue;
+        
+      } else if (virtualPos === virtualStart) {
+        // CRITICAL FIX: Mark exactly at modification start
+        if (deletedBytes === 0) {
+          // Pure insertion at this point - mark stays at insertion point
+          console.log(`[DEBUG] Mark ${name}: at insertion point, stays put`);
+          continue;
+        } else {
+          // Deletion starting at this point - mark stays at deletion start
+          console.log(`[DEBUG] Mark ${name}: at deletion start, stays put`);
+          continue;
+        }
+        
+      } else if (deletedBytes > 0 && virtualPos > virtualStart && virtualPos < virtualEnd) {
+        // Mark within deleted region - move to deletion start
+        console.log(`[DEBUG] Mark ${name}: within deletion range [${virtualStart}, ${virtualEnd}), moving to deletion start`);
+        try {
+          const newCoord = this._virtualToPageCoord(virtualStart);
+          this._updateMarkCoordinate(name, coord, newCoord);
+        } catch (error) {
+          console.warn(`Failed to move mark ${name} to deletion start: ${error.message}`);
+          // Don't remove the mark, leave it where it is
+        }
+        
+      } else if (virtualPos > virtualStart && (deletedBytes === 0 || virtualPos >= virtualEnd)) {
+        // Mark after modification start (and either no deletion, or after deletion end)
+        console.log(`[DEBUG] Mark ${name}: after modification, shifting by ${netChange} (${virtualPos} + ${netChange} = ${virtualPos + netChange})`);
+        try {
+          const newVirtualPos = virtualPos + netChange;
+          const newCoord = this._virtualToPageCoord(newVirtualPos);
+          this._updateMarkCoordinate(name, coord, newCoord);
+        } catch (error) {
+          console.warn(`Failed to shift mark ${name}: ${error.message}`);
+          // Don't remove the mark, leave it where it is
+        }
+      } else {
+        console.log(`[DEBUG] Mark ${name}: no condition matched - virtualPos=${virtualPos}, virtualStart=${virtualStart}, virtualEnd=${virtualEnd}, deletedBytes=${deletedBytes}`);
+      }
+    }
+    
+    // Invalidate line caches after mark updates
     this.invalidateLineCaches();
   }
 
+  // =================== LINE TRACKING (UNCHANGED) ===================
+
   /**
    * Invalidate line caches (called when buffer content changes)
-   * LEGACY METHOD NAME - keeping for compatibility with VPM
    */
   invalidateLineCaches() {
     this.invalidatePageLineCaches();
@@ -107,134 +805,6 @@ class LineAndMarksManager {
     }
   }
 
-  // =================== MARKS MANAGEMENT ===================
-
-  /**
-   * Set a named mark at a virtual address
-   * @param {string} markName - Name of the mark
-   * @param {number} virtualAddress - Virtual buffer address
-   */
-  setMark(markName, virtualAddress) {
-    if (virtualAddress < 0 || virtualAddress > this.vpm.getTotalSize()) {
-      throw new Error(`Mark address ${virtualAddress} is out of range`);
-    }
-
-    // Update global registry
-    this.globalMarks.set(markName, virtualAddress);
-
-    // Find the page containing this address
-    const descriptor = this.vpm.addressIndex.findPageAt(virtualAddress);
-    if (descriptor && this.vpm.pageCache.has(descriptor.pageId)) {
-      const pageInfo = this.vpm.pageCache.get(descriptor.pageId);
-      const pageOffset = virtualAddress - descriptor.virtualStart;
-      pageInfo.setMark(markName, pageOffset, virtualAddress);
-    }
-  }
-
-  /**
-   * Get the virtual address of a named mark
-   * @param {string} markName - Name of the mark
-   * @returns {number|null} - Virtual address or null if not found
-   */
-  getMark(markName) {
-    return this.globalMarks.get(markName) || null;
-  }
-
-  /**
-   * Remove a named mark
-   * @param {string} markName - Name of the mark
-   * @returns {boolean} - True if mark was found and removed
-   */
-  removeMark(markName) {
-    const existed = this.globalMarks.has(markName);
-    
-    if (existed) {
-      const virtualAddress = this.globalMarks.get(markName);
-      this.globalMarks.delete(markName);
-
-      // Remove from page cache if loaded
-      const descriptor = this.vpm.addressIndex.findPageAt(virtualAddress);
-      if (descriptor && this.vpm.pageCache.has(descriptor.pageId)) {
-        const pageInfo = this.vpm.pageCache.get(descriptor.pageId);
-        pageInfo.removeMark(markName);
-      }
-    }
-
-    return existed;
-  }
-
-  /**
-   * Get all marks between two virtual addresses
-   * @param {number} startAddress - Start address (inclusive)
-   * @param {number} endAddress - End address (inclusive)
-   * @returns {Array<{name: string, address: number}>} - Marks in range
-   */
-  getMarksInRange(startAddress, endAddress) {
-    const result = [];
-    
-    for (const [markName, virtualAddress] of this.globalMarks) {
-      if (virtualAddress >= startAddress && virtualAddress <= endAddress) {
-        result.push({ name: markName, address: virtualAddress });
-      }
-    }
-    
-    return result.sort((a, b) => a.address - b.address);
-  }
-
-  /**
-   * Get all marks in the buffer
-   * @returns {Array<{name: string, address: number}>} - All marks
-   */
-  getAllMarks() {
-    const result = [];
-    for (const [markName, virtualAddress] of this.globalMarks) {
-      result.push({ name: markName, address: virtualAddress });
-    }
-    return result.sort((a, b) => a.address - b.address);
-  }
-
-  /**
-   * Extract marks from a range (for delete operations)
-   * @param {number} startAddress - Start address
-   * @param {number} endAddress - End address
-   * @returns {Array<{name: string, relativeOffset: number}>} - Extracted marks
-   */
-  extractMarksFromRange(startAddress, endAddress) {
-    const extracted = [];
-    const marksToRemove = [];
-
-    for (const [markName, virtualAddress] of this.globalMarks) {
-      if (virtualAddress >= startAddress && virtualAddress < endAddress) {
-        extracted.push({
-          name: markName,
-          relativeOffset: virtualAddress - startAddress
-        });
-        marksToRemove.push(markName);
-      }
-    }
-
-    // Remove extracted marks
-    for (const markName of marksToRemove) {
-      this.removeMark(markName);
-    }
-
-    return extracted.sort((a, b) => a.relativeOffset - b.relativeOffset);
-  }
-
-  /**
-   * Insert marks from relative positions (for insert operations)
-   * @param {number} insertAddress - Address where content was inserted
-   * @param {Array<{name: string, relativeOffset: number}>} marks - Marks to insert
-   */
-  insertMarksFromRelative(insertAddress, marks) {
-    for (const markData of marks) {
-      const virtualAddress = insertAddress + markData.relativeOffset;
-      this.setMark(markData.name, virtualAddress);
-    }
-  }
-
-  // =================== SIMPLE SYNCHRONOUS LINE TRACKING ===================
-
   /**
    * Get the total number of lines in the buffer (SYNCHRONOUS)
    * @returns {number} - Total line count
@@ -255,7 +825,7 @@ class LineAndMarksManager {
       // Use cached newline count if available
       if (descriptor.lineInfoCached) {
         lineCount += descriptor.newlineCount;
-      } else if (this.vpm.pageCache.has(descriptor.pageId)) {
+      } else if (this.vpm && this.vpm.pageCache.has(descriptor.pageId)) {
         // Page is loaded - count newlines and cache the result
         const pageInfo = this.vpm.pageCache.get(descriptor.pageId);
         pageInfo.ensureLineCacheValid();
@@ -381,11 +951,16 @@ class LineAndMarksManager {
    * @returns {number} - Line number (1-based) or 0 if invalid address
    */
   getLineNumberFromAddress(virtualAddress) {
-    if (virtualAddress < 0 || virtualAddress > this.vpm.getTotalSize()) {
+    if (virtualAddress < 0) {
+      return 0;
+    }
+    
+    const totalSize = this.vpm.getTotalSize();
+    if (virtualAddress > totalSize) {
       return 0;
     }
 
-    if (this.vpm.getTotalSize() === 0) {
+    if (totalSize === 0) {
       return 1; // Empty buffer has line 1
     }
 
@@ -438,10 +1013,9 @@ class LineAndMarksManager {
   /**
    * Convert line/character position to absolute byte position (SYNCHRONOUS)
    * @param {Object} pos - {line, character} (both 1-based, character = byte offset in line)
-   * @param {number[]} lineStarts - Ignored (legacy parameter)
    * @returns {number} - Absolute byte position
    */
-  lineCharToBytePosition(pos, lineStarts = null) {
+  lineCharToBytePosition(pos) {
     const lineInfo = this.getLineInfo(pos.line);
     if (!lineInfo) {
       return this.vpm.getTotalSize();
@@ -462,10 +1036,9 @@ class LineAndMarksManager {
   /**
    * Convert absolute byte position to line/character position (SYNCHRONOUS)
    * @param {number} bytePos - Absolute byte position
-   * @param {number[]} lineStarts - Ignored (legacy parameter)
    * @returns {Object} - {line, character} (both 1-based, character = byte offset in line + 1)
    */
-  byteToLineCharPosition(bytePos, lineStarts = null) {
+  byteToLineCharPosition(bytePos) {
     const lineNumber = this.getLineNumberFromAddress(bytePos);
     
     if (lineNumber === 0) {
@@ -483,105 +1056,28 @@ class LineAndMarksManager {
     return { line: lineNumber, character: byteOffsetInLine + 1 };
   }
 
-  // =================== ENHANCED OPERATIONS WITH MARKS (Still Async) ===================
-
-  /**
-   * Enhanced getBytes that includes marks in the result
-   * @param {number} start - Start address
-   * @param {number} end - End address
-   * @param {boolean} includeMarks - Whether to include marks in result
-   * @returns {Promise<Buffer|ExtractedContent>} - Data or data with marks
-   */
-  async getBytesWithMarks(start, end, includeMarks = false) {
-    const data = await this.vpm.readRange(start, end);
-    
-    if (!includeMarks) {
-      return data;
-    }
-
-    const marks = this.getMarksInRange(start, end - 1);
-    const relativeMarks = marks.map(mark => ({
-      name: mark.name,
-      relativeOffset: mark.address - start
-    }));
-
-    return new ExtractedContent(data, relativeMarks);
-  }
-
-  /**
-   * Enhanced deleteBytes that returns deleted data with marks
-   * @param {number} start - Start address
-   * @param {number} end - End address
-   * @returns {Promise<ExtractedContent>} - Deleted data with marks
-   */
-  async deleteBytesWithMarks(start, end) {
-    // Extract marks before deletion
-    const extractedMarks = this.extractMarksFromRange(start, end);
-    
-    // Perform the deletion through VPM
-    const deletedData = await this.vpm.deleteRange(start, end);
-    
-    // Update remaining marks
-    this.updateMarksAfterModification(start, end - start, 0);
-    
-    return new ExtractedContent(deletedData, extractedMarks);
-  }
-
-  /**
-   * Enhanced insertBytes that accepts marks to be inserted
-   * @param {number} position - Insert position
-   * @param {Buffer} data - Data to insert
-   * @param {Array<{name: string, relativeOffset: number}>} marks - Marks to insert
-   */
-  async insertBytesWithMarks(position, data, marks = []) {
-    // Perform the insertion through VPM
-    await this.vpm.insertAt(position, data);
-    
-    // Update marks
-    this.updateMarksAfterModification(position, 0, data.length);
-    
-    // Insert the new marks
-    this.insertMarksFromRelative(position, marks);
-  }
-
-  /**
-   * Enhanced overwriteBytes with marks support
-   * @param {number} position - Overwrite position
-   * @param {Buffer} data - New data
-   * @param {Array<{name: string, relativeOffset: number}>} marks - Marks to insert
-   * @returns {Promise<ExtractedContent>} - Overwritten data with marks
-   */
-  async overwriteBytesWithMarks(position, data, marks = []) {
-    const endPosition = position + data.length;
-    
-    // Extract marks from overwritten region
-    const overwrittenMarks = this.extractMarksFromRange(position, endPosition);
-    
-    // Get the overwritten data
-    const overwrittenData = await this.vpm.readRange(position, endPosition);
-    
-    // Perform delete and insert
-    await this.vpm.deleteRange(position, endPosition);
-    await this.vpm.insertAt(position, data);
-    
-    // Update marks (no net size change)
-    this.updateMarksAfterModification(position, data.length, data.length);
-    
-    // Insert new marks
-    this.insertMarksFromRelative(position, marks);
-    
-    return new ExtractedContent(overwrittenData, overwrittenMarks);
-  }
-
   /**
    * Get memory usage statistics
    * @returns {Object} - Memory usage info
    */
   getMemoryStats() {
-    let marksMemory = this.globalMarks.size * 64; // Rough estimate
+    // Calculate marks memory more accurately
+    let marksMemory = 0;
+    for (const [markName, coord] of this.globalMarks) {
+      marksMemory += markName.length * 2; // String storage (UTF-16)
+      marksMemory += 16; // Array overhead
+      marksMemory += coord[0].length * 2; // pageId string
+      marksMemory += 8; // offset number
+    }
+    
+    // Add page index memory
+    for (const markSet of this.pageToMarks.values()) {
+      marksMemory += markSet.size * 16; // Set overhead per mark
+    }
     
     return {
       globalMarksCount: this.globalMarks.size,
+      pageIndexSize: this.pageToMarks.size,
       totalLines: -1, // No longer cached globally
       lineStartsCacheSize: 0, // No global cache
       lineStartsCacheValid: true, // Always valid since no cache
