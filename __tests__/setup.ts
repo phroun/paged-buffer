@@ -439,15 +439,15 @@ class TestUtils {
     
     // Only clear unmodified original pages
     if (vpm.pageCache && vpm.loadedPages && vpm.addressIndex) {
-      for (const [pageId, pageInfo] of vpm.pageCache) {
-        const descriptor = vpm.addressIndex.pages.find((p: any) => p.pageId === pageId);
+      for (const [pageKey, pageInfo] of vpm.pageCache) {
+        const descriptor = vpm.addressIndex.pages.find((p: any) => p.pageKey === pageKey);
         if (descriptor && descriptor.sourceType === 'original' && !descriptor.isDirty) {
-          vpm.pageCache.delete(pageId);
-          vpm.loadedPages.delete(pageId);
+          vpm.pageCache.delete(pageKey);
+          vpm.loadedPages.delete(pageKey);
           descriptor.isLoaded = false;
           
           // Remove from LRU order
-          const lruIndex = vpm.lruOrder.indexOf(pageId);
+          const lruIndex = vpm.lruOrder.indexOf(pageKey);
           if (lruIndex >= 0) {
             vpm.lruOrder.splice(lruIndex, 1);
           }

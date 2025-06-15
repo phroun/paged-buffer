@@ -7,7 +7,7 @@ import { promises as fs } from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { PagedBuffer } from '../src/paged-buffer';
-//import { BufferUndoSystem, OperationType } from '../src/undo-system';
+import { BufferUndoSystem, OperationType } from '../src/undo-system';
 import { FilePageStorage } from '../src/storage/file-page-storage';
 import { BufferState } from '../src/types/buffer-types';
 
@@ -724,7 +724,7 @@ describe('PagedBuffer - Memory Management', () => {
       
       // Each notification should have useful metadata
       evictionNotifications.forEach(notification => {
-        expect(notification.metadata).toHaveProperty('pageId');
+        expect(notification.metadata).toHaveProperty('pageKey');
         expect(notification.severity).toBe('debug');
       });
     });
@@ -968,11 +968,20 @@ describe('PagedBuffer - Text Features (UTF-8)', () => {
       const largeContent = 'A'.repeat(200); // Multiple 64-byte pages
       buffer.loadContent(largeContent);
       
+      console.log('Buffer total size:', buffer.getTotalSize());
+      console.log('Buffer page size:', buffer.pageSize);
+      
       // Get line info without loading (may be approximate)
       const lineInfo = buffer.getLineInfo(1);
+      console.log('Line info:', lineInfo);
+      
+      const seekAddress = lineInfo?.byteStart ?? 0;
+      console.log('Seeking to address:', seekAddress);
       
       // Ensure exact loading with seekAddress
-      const loaded = await buffer.seekAddress(lineInfo?.byteStart ?? 0);
+      const loaded = await buffer.seekAddress(seekAddress);
+      console.log('Seek result:', loaded);
+      
       expect(loaded).toBe(true);
       
       // Get exact line info after seeking
@@ -983,10 +992,14 @@ describe('PagedBuffer - Text Features (UTF-8)', () => {
     test('should handle invalid addresses in seekAddress', async () => {
       buffer.loadContent('test');
       
+      console.log('Buffer size for invalid test:', buffer.getTotalSize());
+      
       const loaded1 = await buffer.seekAddress(-1);
+      console.log('Seek -1 result:', loaded1);
       expect(loaded1).toBe(false);
       
       const loaded2 = await buffer.seekAddress(1000);
+      console.log('Seek 1000 result:', loaded2);
       expect(loaded2).toBe(false);
     });
   });
@@ -1013,11 +1026,7 @@ describe('PagedBuffer - Error Handling and Edge Cases', () => {
       
       // Should handle gracefully without throwing
       const result = await buffer.getBytes(10, 20);
-      if (Buffer.isBuffer(result)) {
-        expect(result.length).toBe(0);
-      } else {
-        expect(result.data.length).toBe(0);
-      }
+      expect(result.length).toBe(0);
       
       await expect(buffer.insertBytes(100, Buffer.from('x'))).rejects.toThrow('beyond end of buffer');
     });
@@ -1034,11 +1043,7 @@ describe('PagedBuffer - Error Handling and Edge Cases', () => {
       buffer.loadContent('');
       
       const content = await buffer.getBytes(0, 0);
-      if (Buffer.isBuffer(content)) {
-        expect(content.length).toBe(0);
-      } else {
-        expect(content.data.length).toBe(0);
-      }
+      expect(content.length).toBe(0);
       
       await buffer.insertBytes(0, Buffer.from('first'));
       const newContent = await buffer.getBytes(0, buffer.getTotalSize());
@@ -1079,11 +1084,8 @@ describe('PagedBuffer - Error Handling and Edge Cases', () => {
       
       // Delete across page boundaries
       const deleted = await buffer.deleteBytes(50, 150);
-      if (Buffer.isBuffer(deleted)) {
-        expect(deleted.length).toBe(100);
-      } else {
-        expect(deleted.data.length).toBe(100);
-      }
+      
+      expect(deleted.length).toBe(100);
       expect(buffer.getTotalSize()).toBe(100);
     });
   });
@@ -1099,11 +1101,7 @@ describe('PagedBuffer - Error Handling and Edge Cases', () => {
       await buffer.insertBytes(65, Buffer.from('INSERT'));
       
       const result = await buffer.getBytes(60, 80);
-      if (Buffer.isBuffer(result)) {
-        expect(result.length).toBeGreaterThan(0);
-      } else {
-        expect(result.data.length).toBeGreaterThan(0);
-      }
+      expect(result.length).toBeGreaterThan(0);
     });
 
     test('should handle corrupted UTF-8 gracefully', async () => {
@@ -1113,11 +1111,7 @@ describe('PagedBuffer - Error Handling and Edge Cases', () => {
       
       // Should not throw when reading
       const result = await buffer.getBytes(0, invalidUtf8.length);
-      if (Buffer.isBuffer(result)) {
-        expect(result.length).toBe(invalidUtf8.length);
-      } else {
-        expect(result.data.length).toBe(invalidUtf8.length);
-      }
+      expect(result.length).toBe(invalidUtf8.length);
     });
   });
 
@@ -1134,11 +1128,7 @@ describe('PagedBuffer - Error Handling and Edge Cases', () => {
       await Promise.all(operations);
       
       const result = await buffer.getBytes(0, buffer.getTotalSize());
-      if (Buffer.isBuffer(result)) {
-        expect(result.length).toBeGreaterThan(10);
-      } else {
-        expect(result.data.length).toBeGreaterThan(10);
-      }
+      expect(result.length).toBeGreaterThan(10);
     });
   });
 
@@ -1189,7 +1179,7 @@ describe('PagedBuffer - Notification System', () => {
       // Check notification structure
       evictionNotifications.forEach(notification => {
         expect(notification.severity).toBe('debug');
-        expect(notification.metadata.pageId).toBeTruthy();
+        expect(notification.metadata.pageKey).toBeTruthy();
       });
     });
 

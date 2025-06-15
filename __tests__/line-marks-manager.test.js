@@ -107,7 +107,7 @@ describe('LineAndMarksManager - Page Coordinate Marks System', () => {
       const globalMarks = lineAndMarksManager.globalMarks;
       expect(globalMarks.size).toBe(3);
 
-      // Each mark should be stored as [pageId, offset]
+      // Each mark should be stored as [pageKey, offset]
       const mark1Coord = globalMarks.get('mark1');
       const mark2Coord = globalMarks.get('mark2');
       const mark3Coord = globalMarks.get('mark3');
@@ -116,7 +116,7 @@ describe('LineAndMarksManager - Page Coordinate Marks System', () => {
       expect(Array.isArray(mark2Coord)).toBe(true);
       expect(Array.isArray(mark3Coord)).toBe(true);
 
-      expect(mark1Coord.length).toBe(2); // [pageId, offset]
+      expect(mark1Coord.length).toBe(2); // [pageKey, offset]
       expect(mark2Coord.length).toBe(2);
       expect(mark3Coord.length).toBe(2);
 

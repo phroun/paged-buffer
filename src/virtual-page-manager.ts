@@ -96,51 +96,28 @@ class PageAddressIndex {
   public totalVirtualSize: number = 0;
 
   /**
-   * Generic binary search for range boundaries
+   * Find the page containing a virtual address
    */
-  private _findRangeBoundary(
-    condition: (page: PageDescriptor) => boolean,
-    findFirst: boolean,
-    searchStart: number = 0,
-    searchEnd: number = this.pages.length - 1
-  ): number {
-    let left = searchStart;
-    let right = searchEnd;
-    let result = -1;
+  findPageAt(virtualPos: number): PageDescriptor | null {
+    if (this.pages.length === 0) return null;
+    
+    let left = 0;
+    let right = this.pages.length - 1;
     
     while (left <= right) {
       const mid = Math.floor((left + right) / 2);
       const page = this.pages[mid];
       
-      if (condition(page)) {
-        result = mid;
-        if (findFirst) {
-          right = mid - 1;  // Search left for earlier match
-        } else {
-          left = mid + 1;   // Search right for later match
-        }
+      if (page.contains(virtualPos)) {
+        return page;
+      } else if (virtualPos < page.virtualStart) {
+        right = mid - 1;  // Search left
       } else {
-        if (findFirst) {
-          left = mid + 1;
-        } else {
-          right = mid - 1;
-        }
+        left = mid + 1;   // Search right
       }
     }
     
-    return result;
-  }
-
-  /**
-   * Find the page containing a virtual address
-   */
-  findPageAt(virtualPos: number): PageDescriptor | null {
-    const index = this._findRangeBoundary(
-      page => page.contains(virtualPos),
-      true  // findFirst = true (though there should only be one match)
-    );
-    
-    return index === -1 ? null : this.pages[index];
+    return null;
   }
 
   /**
@@ -155,16 +132,23 @@ class PageAddressIndex {
    */
   insertPage(pageDesc: PageDescriptor): void {
     // Find insertion point using binary search
-    const insertIndex = this._findRangeBoundary(
-      page => page.virtualStart > pageDesc.virtualStart,
-      true  // findFirst = true (find the first page that starts after our new page)
-    );
+    let left = 0;
+    let right = this.pages.length;  // Note: length, not length-1
     
-    // If no page starts after our new page, insert at the end
-    const actualInsertIndex = insertIndex === -1 ? this.pages.length : insertIndex;
+    while (left < right) {  // Note: < not <=
+      const mid = Math.floor((left + right) / 2);
+      const page = this.pages[mid];
+      
+      if (page.virtualStart > pageDesc.virtualStart) {
+        right = mid;      // Insert before this page
+      } else {
+        left = mid + 1;   // Insert after this page
+      }
+    }
     
-    this.pages.splice(actualInsertIndex, 0, pageDesc);
-    this.pageKeyIndex.set(pageDesc.pageKey, pageDesc); // Add to hash map
+    // Insert at position 'left'
+    this.pages.splice(left, 0, pageDesc);
+    this.pageKeyIndex.set(pageDesc.pageKey, pageDesc);
     this._updateVirtualSizes();
   }
 
@@ -238,34 +222,78 @@ class PageAddressIndex {
   }
 
   /**
-   * Get pages that intersect with a virtual range
+   * Find first page that intersects with the range [startPos, endPos)
+   */
+  private _findFirstIntersecting(startPos: number): number {
+    if (this.pages.length === 0) return -1;
+    
+    let left = 0;
+    let right = this.pages.length - 1;
+    let result = -1;
+    
+    while (left <= right) {
+      const mid = Math.floor((left + right) / 2);
+      const page = this.pages[mid];
+      
+      if (page.virtualEnd > startPos) {
+        // This page intersects, but there might be an earlier one
+        result = mid;
+        right = mid - 1;  // Search for earlier intersecting page
+      } else {
+        // page.virtualEnd <= startPos, so startPos is at or after this page
+        left = mid + 1;   // Search right for intersecting pages
+      }
+    }
+    
+    return result;
+  }
+
+  /**
+   * Find last page that intersects with the range [startPos, endPos)
+   */
+  private _findLastIntersecting(endPos: number, startFrom: number = 0): number {
+    if (this.pages.length === 0) return -1;
+    
+    let left = startFrom;
+    let right = this.pages.length - 1;
+    let result = -1;
+    
+    while (left <= right) {
+      const mid = Math.floor((left + right) / 2);
+      const page = this.pages[mid];
+      
+      if (page.virtualStart < endPos) {
+        // This page intersects, but there might be a later one
+        result = mid;
+        left = mid + 1;   // Search for later intersecting page
+      } else {
+        // page.virtualStart >= endPos, so endPos is at or before this page
+        right = mid - 1;  // Search left for intersecting pages
+      }
+    }
+    
+    return result;
+  }
+
+  /**
+   * Get all pages that intersect with the given range
    */
   getPagesInRange(startPos: number, endPos: number): PageDescriptor[] {
-    if (this.pages.length === 0) return [];
+    if (this.pages.length === 0 || startPos >= endPos) {
+      return [];
+    }
     
-    // Find first page where virtualEnd > startPos
-    const firstIndex = this._findRangeBoundary(
-      page => page.virtualEnd > startPos,
-      true  // findFirst = true
-    );
-    
+    const firstIndex = this._findFirstIntersecting(startPos);
     if (firstIndex === -1) return [];
     
-    // Find last page where virtualStart < endPos
-    // OPTIMIZATION: Start search from firstIndex since we know earlier pages don't intersect
-    const lastIndex = this._findRangeBoundary(
-      page => page.virtualStart < endPos,
-      false,        // findFirst = false (find last)
-      firstIndex,   // searchStart = firstIndex (optimization!)
-      this.pages.length - 1
-    );
-    
+    const lastIndex = this._findLastIntersecting(endPos, firstIndex);
     if (lastIndex === -1) return [];
     
     // Collect intersecting pages
     const result: PageDescriptor[] = [];
     for (let i = firstIndex; i <= lastIndex; i++) {
       const page = this.pages[i];
+      // Double-check intersection (should always be true given our search logic)
       if (page.virtualEnd > startPos && page.virtualStart < endPos) {
         result.push(page);
       }

@@ -3,17 +3,17 @@
  * Uses small page sizes to thoroughly test boundary conditions
  */
 
-const fs = require('fs').promises;
-const path = require('path');
-const os = require('os');
+import { promises as fs } from 'fs';
+import * as path from 'path';
+import * as os from 'os';
 
 // Mock the buffer dependencies since we're testing in isolation
 const mockBuffer = {
   storage: {
     savePage: jest.fn().mockResolvedValue(undefined),
-    loadPage: jest.fn().mockImplementation((pageId) => {
+    loadPage: jest.fn().mockImplementation((pageKey: string) => {
       // Simulate storage with some test data
-      return Promise.resolve(Buffer.from(`stored_data_for_${pageId}`));
+      return Promise.resolve(Buffer.from(`stored_data_for_${pageKey}`));
     }),
     deletePage: jest.fn().mockResolvedValue(undefined)
   },
@@ -22,13 +22,13 @@ const mockBuffer = {
   getTotalSize: jest.fn().mockReturnValue(0)
 };
 
-const { VirtualPageManager, PageDescriptor, PageAddressIndex } = require('../src/virtual-page-manager');
+import { VirtualPageManager, PageDescriptor, PageAddressIndex } from '../src/virtual-page-manager';
 
 describe('PageDescriptor', () => {
   test('should create descriptor with correct properties', () => {
     const desc = new PageDescriptor('page1', 100, 50, 'original', { filename: 'test.txt' });
     
-    expect(desc.pageId).toBe('page1');
+    expect(desc.pageKey).toBe('page1');
     expect(desc.virtualStart).toBe(100);
     expect(desc.virtualSize).toBe(50);
     expect(desc.virtualEnd).toBe(150);
@@ -60,7 +60,7 @@ describe('PageDescriptor', () => {
 });
 
 describe('PageAddressIndex', () => {
-  let index;
+  let index: PageAddressIndex;
 
   beforeEach(() => {
     index = new PageAddressIndex();
@@ -101,7 +101,7 @@ describe('PageAddressIndex', () => {
 
     test('should find correct page with binary search', () => {
       // Create many small pages to test binary search
-      const pages = [];
+      const pages: PageDescriptor[] = [];
       for (let i = 0; i < 100; i++) {
         const page = new PageDescriptor(`page${i}`, i * 10, 10, 'memory', {});
         pages.push(page);
@@ -186,8 +186,8 @@ describe('PageAddressIndex', () => {
       expect(newPage.virtualStart).toBe(12);
       expect(newPage.virtualSize).toBe(8);
       expect(newPage.virtualEnd).toBe(20);
-      expect(newPage.pageId).toBe('page1_split');
-      expect(newPage.parentId).toBe('page1');
+      expect(newPage.pageKey).toBe('page1_split');
+      expect(newPage.parentKey).toBe('page1');
       expect(newPage.generation).toBe(1);
       
       // Should maintain total size
@@ -279,13 +279,13 @@ describe('PageAddressIndex', () => {
 });
 
 describe('VirtualPageManager', () => {
-  let manager;
-  let tempDir;
+  let manager: VirtualPageManager;
+  let tempDir: string;
 
   beforeEach(async () => {
     tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'vpm-test-'));
     // Use very small page size to test boundary conditions
-    manager = new VirtualPageManager(mockBuffer, 16); // 16 byte pages!
+    manager = new VirtualPageManager(mockBuffer as any, 16); // 16 byte pages!
     // Reset mock calls
     mockBuffer._notify.mockClear();
     mockBuffer._markAsDetached.mockClear();
@@ -349,7 +349,7 @@ describe('VirtualPageManager', () => {
     test('should translate addresses within single page', async () => {
       const result = await manager.translateAddress(0);
       expect(result.relativePos).toBe(0);
-      expect(result.descriptor.pageId).toBeTruthy();
+      expect(result.descriptor.pageKey).toBeTruthy();
       
       const result2 = await manager.translateAddress(8);
       expect(result2.relativePos).toBe(8);
@@ -363,7 +363,7 @@ describe('VirtualPageManager', () => {
     test('should handle addresses across multiple pages', async () => {
       // Create content spanning multiple pages
       const content = Buffer.from('A'.repeat(40)); // 40 bytes = 3 pages
-      manager = new VirtualPageManager(mockBuffer, 16);
+      manager = new VirtualPageManager(mockBuffer as any, 16);
       manager.initializeFromContent(content);
       
       const result1 = await manager.translateAddress(0);
@@ -428,7 +428,7 @@ describe('VirtualPageManager', () => {
     test('should handle insertions that span multiple pages', async () => {
       // Create multi-page content first
       const content = Buffer.from('A'.repeat(40)); // 40 bytes = 3 pages
-      manager = new VirtualPageManager(mockBuffer, 16);
+      manager = new VirtualPageManager(mockBuffer as any, 16);
       manager.initializeFromContent(content);
       
       // Insert across page boundary
@@ -520,7 +520,7 @@ describe('VirtualPageManager', () => {
   });
 
   describe('File-based Operations', () => {
-    let testFilePath;
+    let testFilePath: string;
 
     beforeEach(async () => {
       const content = 'The quick brown fox jumps over the lazy dog ABCDEFGHIJKLMNOP'; // 60 bytes - fixed spacing
@@ -568,8 +568,8 @@ describe('VirtualPageManager', () => {
   describe('Memory Management', () => {
     beforeEach(async () => {
       // Create manager with very low memory limit
-      manager = new VirtualPageManager(mockBuffer, 16);
-      manager.maxLoadedPages = 2; // Only 2 pages in memory
+      manager = new VirtualPageManager(mockBuffer as any, 16);
+      (manager as any).maxLoadedPages = 2; // Only 2 pages in memory
       
       const content = Buffer.from('A'.repeat(80)); // 80 bytes = 5 pages
       manager.initializeFromContent(content);
@@ -741,8 +741,8 @@ describe('VirtualPageManager', () => {
       // Mock storage to fail on first save attempt
       mockBuffer.storage.savePage.mockRejectedValueOnce(new Error('Storage full'));
       
-      manager = new VirtualPageManager(mockBuffer, 16);
-      manager.maxLoadedPages = 1;
+      manager = new VirtualPageManager(mockBuffer as any, 16);
+      (manager as any).maxLoadedPages = 1;
       
       const content = Buffer.from('A'.repeat(32)); // 2 pages
       manager.initializeFromContent(content);
@@ -802,7 +802,7 @@ describe('VirtualPageManager', () => {
 
 describe('Integration Tests', () => {
   test('should handle realistic editing scenario', async () => {
-    const manager = new VirtualPageManager(mockBuffer, 64); // More realistic page size
+    const manager = new VirtualPageManager(mockBuffer as any, 64); // More realistic page size
     
     // Start with document content
     const content = Buffer.from(`# Document Title
