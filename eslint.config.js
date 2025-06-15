@@ -1,10 +1,17 @@
+const typescriptEslint = require('@typescript-eslint/eslint-plugin');
+const typescriptParser = require('@typescript-eslint/parser');
+
 module.exports = [
   {
-    // Base configuration for all JavaScript files
-    files: ['**/*.js'],
+    // TypeScript configuration for all TS files
+    files: ['**/*.ts'],
     languageOptions: {
-      ecmaVersion: 2020,
-      sourceType: 'commonjs',
+      parser: typescriptParser,
+      parserOptions: {
+        ecmaVersion: 2020,
+        sourceType: 'module',
+        project: './tsconfig.json'
+      },
       globals: {
         // Node.js globals
         Buffer: 'readonly',
@@ -24,14 +31,33 @@ module.exports = [
         clearImmediate: 'readonly'
       }
     },
+    plugins: {
+      '@typescript-eslint': typescriptEslint
+    },
     rules: {
-      // Error prevention
-      'no-unused-vars': ['error', { 
+      // TypeScript specific rules
+      '@typescript-eslint/no-unused-vars': ['error', { 
         argsIgnorePattern: '^_',
         varsIgnorePattern: '^_',
         caughtErrorsIgnorePattern: '^_'
       }],
-      'no-undef': 'error',
+      '@typescript-eslint/no-explicit-any': 'warn',
+      '@typescript-eslint/explicit-function-return-type': 'warn',
+      '@typescript-eslint/explicit-module-boundary-types': 'warn',
+      '@typescript-eslint/no-inferrable-types': 'off',
+      '@typescript-eslint/prefer-nullish-coalescing': 'error',
+      '@typescript-eslint/prefer-optional-chain': 'error',
+      '@typescript-eslint/no-non-null-assertion': 'warn',
+      '@typescript-eslint/no-unnecessary-type-assertion': 'error',
+      '@typescript-eslint/prefer-as-const': 'error',
+      '@typescript-eslint/no-floating-promises': 'error',
+      '@typescript-eslint/await-thenable': 'error',
+      '@typescript-eslint/no-misused-promises': 'error',
+      '@typescript-eslint/require-await': 'warn',
+
+      // Error prevention
+      'no-undef': 'off', // TypeScript handles this
+      'no-unused-vars': 'off', // Use TypeScript version
       'no-unreachable': 'error',
       'no-constant-condition': 'error',
       'no-dupe-args': 'error',
@@ -104,7 +130,7 @@ module.exports = [
   },
   {
     // Test files configuration
-    files: ['**/__tests__/**/*.js', '**/*.test.js', '**/*.spec.js'],
+    files: ['**/__tests__/**/*.ts', '**/*.test.ts', '**/*.spec.ts'],
     languageOptions: {
       globals: {
         // Jest globals
@@ -123,14 +149,53 @@ module.exports = [
       // Relax some rules for tests
       'no-console': 'off',
       'max-len': 'off',
-      'no-magic-numbers': 'off'
+      'no-magic-numbers': 'off',
+      '@typescript-eslint/explicit-function-return-type': 'off',
+      '@typescript-eslint/no-explicit-any': 'off',
+      '@typescript-eslint/no-non-null-assertion': 'off'
     }
   },
   {
     // Configuration files
     files: ['*.config.js', 'jest.config.js', 'eslint.config.js'],
+    languageOptions: {
+      ecmaVersion: 2020,
+      sourceType: 'commonjs'
+    },
     rules: {
-      'no-console': 'off'
+      'no-console': 'off',
+      '@typescript-eslint/no-var-requires': 'off'
+    }
+  },
+  {
+    // Legacy JavaScript files (if any remain)
+    files: ['**/*.js'],
+    languageOptions: {
+      ecmaVersion: 2020,
+      sourceType: 'commonjs',
+      globals: {
+        Buffer: 'readonly',
+        console: 'readonly',
+        global: 'readonly',
+        process: 'readonly',
+        __dirname: 'readonly',
+        __filename: 'readonly',
+        module: 'readonly',
+        require: 'readonly',
+        exports: 'readonly'
+      }
+    },
+    rules: {
+      // Basic JavaScript rules
+      'no-unused-vars': ['error', { 
+        argsIgnorePattern: '^_',
+        varsIgnorePattern: '^_',
+        caughtErrorsIgnorePattern: '^_'
+      }],
+      'no-undef': 'error',
+      'no-console': 'warn',
+      'semi': ['error', 'always'],
+      'quotes': ['error', 'single', { avoidEscape: true }]
     }
   },
   {
@@ -141,7 +206,8 @@ module.exports = [
       'coverage/',
       'docs/',
       'reference/',
-      '*.min.js'
+      '*.min.js',
+      '*.d.ts'
     ]
   }
 ];

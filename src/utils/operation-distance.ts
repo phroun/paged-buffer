@@ -5,28 +5,37 @@
  * @version 1.0.0
  */
 
+import {
+  type OperationType,
+  type BufferOperation,
+  type OperationRange,
+  type DistanceCalculationOptions,
+  type OperationDistanceDebugInfo
+} from '../types/common';
+
 /**
  * Represents position information for an operation
  */
 class OperationPosition {
-  constructor(preExecution, postExecution = null) {
-    this.preExecution = preExecution; // Position before operation executes
-    this.postExecution = postExecution; // Position after operation executes
+  public preExecution: number; // Position before operation executes
+  public postExecution: number | null; // Position after operation executes
+
+  constructor(preExecution: number, postExecution: number | null = null) {
+    this.preExecution = preExecution;
+    this.postExecution = postExecution;
   }
   
   /**
    * Set the post-execution position
-   * @param {number} position - Position after operation executed
    */
-  setPostExecution(position) {
+  setPostExecution(position: number): void {
     this.postExecution = position;
   }
   
   /**
    * Check if this position info is complete (has both pre and post execution positions)
-   * @returns {boolean}
    */
-  isComplete() {
+  isComplete(): boolean {
     return this.postExecution !== null;
   }
 }
@@ -35,20 +44,30 @@ class OperationPosition {
  * Lightweight operation descriptor for distance calculations
  */
 class OperationDescriptor {
-  constructor(type, position, dataLength = 0, originalDataLength = 0, operationNumber = 0) {
-    this.type = type; // 'insert', 'delete', 'overwrite'
+  public type: OperationType;
+  public position: OperationPosition;
+  public dataLength: number; // Length of inserted/overwritten data
+  public originalDataLength: number; // Length of deleted/overwritten data
+  public operationNumber: number; // For chronological ordering
+
+  constructor(
+    type: OperationType,
+    position: number,
+    dataLength: number = 0,
+    originalDataLength: number = 0,
+    operationNumber: number = 0
+  ) {
+    this.type = type;
     this.position = new OperationPosition(position);
-    this.dataLength = dataLength; // Length of inserted/overwritten data
-    this.originalDataLength = originalDataLength; // Length of deleted/overwritten data
-    this.operationNumber = operationNumber; // For chronological ordering
+    this.dataLength = dataLength;
+    this.originalDataLength = originalDataLength;
+    this.operationNumber = operationNumber;
   }
   
   /**
    * Create from a BufferOperation
-   * @param {BufferOperation} bufferOp - Source operation
-   * @returns {OperationDescriptor}
    */
-  static fromBufferOperation(bufferOp) {
+  static fromBufferOperation(bufferOp: BufferOperation): OperationDescriptor {
     const dataLength = bufferOp.data ? bufferOp.data.length : 0;
     const originalDataLength = bufferOp.originalData ? bufferOp.originalData.length : 0;
     
@@ -60,7 +79,7 @@ class OperationDescriptor {
       bufferOp.operationNumber
     );
     
-    if (bufferOp.postExecutionPosition !== null) {
+    if (bufferOp.postExecutionPosition !== null && bufferOp.postExecutionPosition !== undefined) {
       descriptor.position.setPostExecution(bufferOp.postExecutionPosition);
     }
     
@@ -69,17 +88,15 @@ class OperationDescriptor {
   
   /**
    * Set post-execution position
-   * @param {number} position - Position after execution
    */
-  setPostExecutionPosition(position) {
+  setPostExecutionPosition(position: number): void {
     this.position.setPostExecution(position);
   }
   
   /**
    * Get the length of content this operation adds to the final buffer
-   * @returns {number}
    */
-  getInsertedLength() {
+  getInsertedLength(): number {
     switch (this.type) {
       case 'insert':
         return this.dataLength;
@@ -100,15 +117,14 @@ class OperationDistanceCalculator {
   
   /**
    * Calculate logical distance between two operations
-   * @param {OperationDescriptor} op1 - First operation
-   * @param {OperationDescriptor} op2 - Second operation
-   * @param {Object} options - Calculation options
-   * @param {boolean} options.debug - Enable debug logging
-   * @returns {number} - Logical distance (0 = adjacent/overlapping)
    */
-  static calculateDistance(op1, op2, options = {}) {
+  static calculateDistance(
+    op1: OperationDescriptor,
+    op2: OperationDescriptor,
+    options: DistanceCalculationOptions = {}
+  ): number {
     // Determine chronological order
-    let firstOp, secondOp;
+    let firstOp: OperationDescriptor, secondOp: OperationDescriptor;
     if (op1.operationNumber <= op2.operationNumber) {
       firstOp = op1;
       secondOp = op2;
@@ -138,13 +154,10 @@ class OperationDistanceCalculator {
   
   /**
    * Calculate the range affected by an operation in post-execution coordinates
-   * @param {OperationDescriptor} op - Operation that has executed
-   * @returns {{start: number, end: number}} - Affected range
-   * @private
    */
-  static _calculateOperationRange(op) {
-    const start = op.position.postExecution;
-    let end;
+  private static _calculateOperationRange(op: OperationDescriptor): OperationRange {
+    const start = op.position.postExecution!;
+    let end: number;
     
     if (op.type === 'delete') {
       // Delete operations don't occupy space in final buffer
@@ -159,12 +172,8 @@ class OperationDistanceCalculator {
   
   /**
    * Calculate distance from an operation to a range
-   * @param {OperationDescriptor} op - Operation to test
-   * @param {{start: number, end: number}} range - Target range
-   * @returns {number} - Distance to range
-   * @private
    */
-  static _calculateDistanceToRange(op, range) {
+  private static _calculateDistanceToRange(op: OperationDescriptor, range: OperationRange): number {
     if (op.type === 'insert') {
       return this._calculateInsertDistance(op, range);
     } else if (op.type === 'delete') {
@@ -179,12 +188,8 @@ class OperationDistanceCalculator {
   
   /**
    * Calculate distance for insert operations
-   * @param {OperationDescriptor} op - Insert operation
-   * @param {{start: number, end: number}} range - Target range
-   * @returns {number} - Distance
-   * @private
    */
-  static _calculateInsertDistance(op, range) {
+  private static _calculateInsertDistance(op: OperationDescriptor, range: OperationRange): number {
     const insPos = op.position.preExecution;
     
     // Check if insertion point is within or touching the range
@@ -198,12 +203,8 @@ class OperationDistanceCalculator {
   
   /**
    * Calculate distance for delete operations
-   * @param {OperationDescriptor} op - Delete operation
-   * @param {{start: number, end: number}} range - Target range
-   * @returns {number} - Distance
-   * @private
    */
-  static _calculateDeleteDistance(op, range) {
+  private static _calculateDeleteDistance(op: OperationDescriptor, range: OperationRange): number {
     const delStart = op.position.preExecution;
     const delEnd = delStart + op.originalDataLength;
     
@@ -223,12 +224,8 @@ class OperationDistanceCalculator {
   
   /**
    * Calculate distance for overwrite operations
-   * @param {OperationDescriptor} op - Overwrite operation
-   * @param {{start: number, end: number}} range - Target range
-   * @returns {number} - Distance
-   * @private
    */
-  static _calculateOverwriteDistance(op, range) {
+  private static _calculateOverwriteDistance(op: OperationDescriptor, range: OperationRange): number {
     const ovStart = op.position.preExecution;
     const ovEnd = ovStart + op.dataLength;
     
@@ -246,15 +243,27 @@ class OperationDistanceCalculator {
   }
   
   /**
-   * Get debug distance calculation
-   * @param {OperationDescriptor} firstOp - First operation
-   * @param {OperationDescriptor} secondOp - Second operation
-   * @param {{start: number, end: number}} range - Calculated range
-   * @param {number} distance - Calculated distance
-   * @returns {{firstOp, secondOp, range, distance}} - Debugging descriptions
-   * @private
+   * Log debug distance calculation
    */
-  static _getDebugDistanceCalculation(firstOp, secondOp, range, distance) {
+  private static _logDistanceCalculation(
+    firstOp: OperationDescriptor,
+    secondOp: OperationDescriptor,
+    range: OperationRange,
+    distance: number
+  ): void {
+    const debugInfo = this._getDebugDistanceCalculation(firstOp, secondOp, range, distance);
+    console.log('[OperationDistance]', JSON.stringify(debugInfo, null, 2));
+  }
+  
+  /**
+   * Get debug distance calculation
+   */
+  private static _getDebugDistanceCalculation(
+    firstOp: OperationDescriptor,
+    secondOp: OperationDescriptor,
+    range: OperationRange,
+    distance: number
+  ): OperationDistanceDebugInfo {
     return {
       firstOp: {
         type: firstOp.type,
@@ -273,7 +282,7 @@ class OperationDistanceCalculator {
   }
 }
 
-module.exports = {
+export {
   OperationPosition,
   OperationDescriptor,
   OperationDistanceCalculator

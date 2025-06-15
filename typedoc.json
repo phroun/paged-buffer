@@ -1,0 +1,91 @@
+{
+  "entryPoints": ["src/index.ts"],
+  "out": "docs",
+  "theme": "default",
+  "name": "@phroun/paged-buffer",
+  "includeVersion": true,
+  "excludeExternals": true,
+  "excludePrivate": false,
+  "excludeProtected": false,
+  "excludeInternal": false,
+  "readme": "README.md",
+  "plugin": ["typedoc-plugin-markdown"],
+  "gitRevision": "main",
+  "sourceLinkTemplate": "https://github.com/phroun/paged-buffer/blob/{gitRevision}/{path}#L{line}",
+  "exclude": [
+    "**/*.test.ts",
+    "**/*.spec.ts",
+    "__tests__/**/*",
+    "coverage/**/*",
+    "lib/**/*",
+    "node_modules/**/*"
+  ],
+  "categorizeByGroup": false,
+  "defaultCategory": "Other",
+  "categoryOrder": [
+    "Core",
+    "Pages",
+    "Operations", 
+    "Types",
+    "Utilities",
+    "*"
+  ],
+  "sort": [
+    "source-order"
+  ],
+  "kindSortOrder": [
+    "Document",
+    "Project",
+    "Module",
+    "Namespace",
+    "Enum",
+    "EnumMember",
+    "Class",
+    "Interface",
+    "TypeAlias",
+    "Constructor",
+    "Property",
+    "Variable",
+    "Function",
+    "Accessor",
+    "Method",
+    "Parameter",
+    "TypeParameter",
+    "TypeLiteral",
+    "CallSignature",
+    "ConstructorSignature",
+    "IndexSignature",
+    "GetSignature",
+    "SetSignature"
+  ],
+  "visibilityFilters": {
+    "protected": false,
+    "private": false,
+    "inherited": true,
+    "external": false
+  },
+  "searchInComments": true,
+  "cleanOutputDir": true,
+  "titleLink": "https://github.com/phroun/paged-buffer",
+  "navigationLinks": {
+    "GitHub": "https://github.com/phroun/paged-buffer",
+    "NPM": "https://www.npmjs.com/package/@phroun/paged-buffer"
+  },
+  "sidebarLinks": {
+    "Documentation": "https://github.com/phroun/paged-buffer/tree/main/docs",
+    "Issues": "https://github.com/phroun/paged-buffer/issues"
+  },
+  "hostedBaseUrl": "https://phroun.github.io/paged-buffer/",
+  "useCodeBlocks": true,
+  "outputFileStrategy": "modules",
+  "fileExtension": ".html",
+  "entryPointStrategy": "expand",
+  "categorizeByGroup": true,
+  "groupOrder": [
+    "Core Classes",
+    "Page Management", 
+    "Operations",
+    "Types & Interfaces",
+    "Utilities"
+  ]
+}

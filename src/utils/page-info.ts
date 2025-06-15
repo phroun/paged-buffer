@@ -2,46 +2,54 @@
  * Enhanced Page metadata with simplified line tracking (marks moved to global system)
  */
 
-const crypto = require('crypto');
+import * as crypto from 'crypto';
+import {
+  type IPageInfo,
+  type PageInfoMemoryStats
+} from '../types/common';
 
 /**
  * Enhanced Page metadata with simplified line tracking and no marks management
  * (Marks are now handled globally by the page coordinate system)
  */
-class PageInfo {
-  constructor(pageId, fileOffset, originalSize, checksum = null) {
-    this.pageId = pageId;
-    this.fileOffset = fileOffset; // Original offset in source file
-    this.originalSize = originalSize; // Original size in source file
-    this.checksum = checksum; // Fast checksum for change detection
-    
-    // Runtime state
-    this.isDirty = false; // Has been modified
-    this.isLoaded = false; // Currently in memory
-    this.isDetached = false; // Conflicts with source file
-    this.currentSize = originalSize; // Current size (may differ if modified)
-    this.data = null; // In-memory data buffer
+class PageInfo implements IPageInfo {
+  public pageKey: string;
+  public fileOffset: number; // Original offset in source file
+  public originalSize: number; // Original size in source file
+  public checksum: string | null; // Fast checksum for change detection
+  
+  // Runtime state
+  public isDirty: boolean = false; // Has been modified
+  public isLoaded: boolean = false; // Currently in memory
+  public isDetached: boolean = false; // Conflicts with source file
+  public currentSize: number; // Current size (may differ if modified)
+  public data: Buffer | null = null; // In-memory data buffer
+  public lastAccess: number;
+  
+  // Simplified line tracking - just store newline positions
+  public newlinePositions: number[] = []; // Array of relative positions of \n characters
+  public linesCacheValid: boolean = false; // Whether newline positions are up to date
+
+  constructor(pageKey: string, fileOffset: number, originalSize: number, checksum: string | null = null) {
+    this.pageKey = pageKey;
+    this.fileOffset = fileOffset;
+    this.originalSize = originalSize;
+    this.checksum = checksum;
+    this.currentSize = originalSize;
     this.lastAccess = Date.now();
-    
-    // Simplified line tracking - just store newline positions
-    this.newlinePositions = []; // Array of relative positions of \n characters
-    this.linesCacheValid = false; // Whether newline positions are up to date
   }
 
   /**
    * Calculate fast checksum for change detection
-   * @param {Buffer} data - Data to checksum
-   * @returns {string} - Checksum
    */
-  static calculateChecksum(data) {
+  static calculateChecksum(data: Buffer): string {
     return crypto.createHash('md5').update(data).digest('hex');
   }
 
   /**
    * Update page with new data and invalidate caches as needed
-   * @param {Buffer} data - New data
    */
-  updateData(data) {
+  updateData(data: Buffer): void {
     this.data = data;
     this.currentSize = data.length;
     this.isDirty = true;
@@ -57,10 +65,8 @@ class PageInfo {
 
   /**
    * Rebuild the newline positions cache
-   * @param {Buffer} data - Page data
-   * @private
    */
-  _rebuildLineCache(data) {
+  private _rebuildLineCache(data: Buffer): void {
     this.newlinePositions = [];
     
     // Single pass through data to find all newlines
@@ -76,7 +82,7 @@ class PageInfo {
   /**
    * Ensure line cache is valid and up to date
    */
-  ensureLineCacheValid() {
+  ensureLineCacheValid(): void {
     if (!this.linesCacheValid && this.isLoaded && this.data) {
       this._rebuildLineCache(this.data);
     }
@@ -84,21 +90,18 @@ class PageInfo {
 
   /**
    * Get the number of newlines in this page
-   * @returns {number} - Number of \n characters
    */
-  getNewlineCount() {
+  getNewlineCount(): number {
     this.ensureLineCacheValid();
     return this.newlinePositions.length;
   }
 
   /**
    * Get global line starts contributed by this page
-   * @param {number} pageVirtualStart - Virtual start address of this page
-   * @returns {number[]} - Array of global line start positions
    */
-  getGlobalLineStarts(pageVirtualStart) {
+  getGlobalLineStarts(pageVirtualStart: number): number[] {
     this.ensureLineCacheValid();
-    const starts = [];
+    const starts: number[] = [];
     
     // Each newline creates a line start at position + 1
     for (const nlPos of this.newlinePositions) {
@@ -111,21 +114,16 @@ class PageInfo {
 
   /**
    * Update line cache after a modification within this page
-   * @param {number} offset - Offset within page where modification occurred
-   * @param {number} deletedBytes - Number of bytes deleted
-   * @param {Buffer} insertedData - Data that was inserted
    */
-  updateAfterModification(_offset, _deletedBytes, _insertedData) {
+  updateAfterModification(_offset: number, _deletedBytes: number, _insertedData: Buffer): void {
     // Invalidate cache - we'll rebuild on next access
     this.linesCacheValid = false;
   }
 
   /**
    * Verify page integrity against original file
-   * @param {Buffer} originalData - Data from original file
-   * @returns {boolean} - True if page matches original
    */
-  verifyIntegrity(originalData) {
+  verifyIntegrity(originalData: Buffer): boolean {
     if (!this.checksum) return false;
     const currentChecksum = PageInfo.calculateChecksum(originalData);
     return currentChecksum === this.checksum;
@@ -133,9 +131,8 @@ class PageInfo {
 
   /**
    * Get memory usage statistics for this page
-   * @returns {Object} - Memory usage info
    */
-  getMemoryStats() {
+  getMemoryStats(): PageInfoMemoryStats {
     let memoryUsed = 0;
     
     if (this.data) {
@@ -161,28 +158,40 @@ class PageInfo {
 
 // Backwards compatibility exports
 class LineInfo {
-  constructor(startOffset, length, endsWithNewline = false) {
+  public startOffset: number;
+  public length: number;
+  public endsWithNewline: boolean;
+
+  constructor(startOffset: number, length: number, endsWithNewline: boolean = false) {
     this.startOffset = startOffset;
     this.length = length;
     this.endsWithNewline = endsWithNewline;
   }
 
-  get endOffset() {
+  get endOffset(): number {
     return this.startOffset + this.length;
   }
 
-  get contentLength() {
+  get contentLength(): number {
     return this.endsWithNewline ? this.length - 1 : this.length;
   }
 }
 
 // Legacy class kept for compatibility but no longer used
 class MarkInfo {
-  constructor(name, pageOffset, virtualAddress) {
+  public name: string;
+  public pageOffset: number;
+  public virtualAddress: number;
+
+  constructor(name: string, pageOffset: number, virtualAddress: number) {
     this.name = name;
     this.pageOffset = pageOffset;
     this.virtualAddress = virtualAddress;
   }
 }
 
-module.exports = { PageInfo, LineInfo, MarkInfo };
+export {
+  PageInfo,
+  LineInfo,
+  MarkInfo
+};

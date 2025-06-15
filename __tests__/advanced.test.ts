@@ -3,18 +3,18 @@
  * Covering file operations, transactions, memory management, and text features
  */
 
-const fs = require('fs').promises;
-const path = require('path');
-const os = require('os');
-const { PagedBuffer } = require('../src/paged-buffer');
-const { BufferUndoSystem, OperationType } = require('../src/undo-system');
-const { FilePageStorage } = require('../src/storage/file-page-storage');
-const { BufferState } = require('../src/types/buffer-types');
+import { promises as fs } from 'fs';
+import * as path from 'path';
+import * as os from 'os';
+import { PagedBuffer } from '../src/paged-buffer';
+//import { BufferUndoSystem, OperationType } from '../src/undo-system';
+import { FilePageStorage } from '../src/storage/file-page-storage';
+import { BufferState } from '../src/types/buffer-types';
 
 describe('PagedBuffer - Size Tracking Verification', () => {
-  let buffer;
-  let tempDir;
-  let testFile;
+  let buffer: PagedBuffer;
+  let tempDir: string;
+  let testFile: string;
 
   beforeEach(async () => {
     buffer = new PagedBuffer(1024);
@@ -44,14 +44,14 @@ describe('PagedBuffer - Size Tracking Verification', () => {
       // Check all size tracking methods
       console.log('File load - buffer.totalSize:', buffer.totalSize);
       console.log('File load - buffer.getTotalSize():', buffer.getTotalSize());
-      console.log('File load - buffer.virtualPageManager.getTotalSize():', buffer.virtualPageManager.getTotalSize());
-      console.log('File load - buffer.virtualPageManager.addressIndex.totalVirtualSize:', buffer.virtualPageManager.addressIndex.totalVirtualSize);
+      console.log('File load - buffer.virtualPageManager.getTotalSize():', (buffer as any).virtualPageManager.getTotalSize());
+      console.log('File load - buffer.virtualPageManager.addressIndex.totalVirtualSize:', (buffer as any).virtualPageManager.addressIndex.totalVirtualSize);
       console.log('File load - expected size:', expectedSize);
       
       expect(buffer.totalSize).toBe(expectedSize);
       expect(buffer.getTotalSize()).toBe(expectedSize);
-      expect(buffer.virtualPageManager.getTotalSize()).toBe(expectedSize);
-      expect(buffer.virtualPageManager.addressIndex.totalVirtualSize).toBe(expectedSize);
+      expect((buffer as any).virtualPageManager.getTotalSize()).toBe(expectedSize);
+      expect((buffer as any).virtualPageManager.addressIndex.totalVirtualSize).toBe(expectedSize);
     });
 
     test('should track size correctly when using loadContent', async () => {
@@ -61,14 +61,14 @@ describe('PagedBuffer - Size Tracking Verification', () => {
       // Check all size tracking methods
       console.log('loadContent - buffer.totalSize:', buffer.totalSize);
       console.log('loadContent - buffer.getTotalSize():', buffer.getTotalSize());
-      console.log('loadContent - buffer.virtualPageManager.getTotalSize():', buffer.virtualPageManager.getTotalSize());
-      console.log('loadContent - buffer.virtualPageManager.addressIndex.totalVirtualSize:', buffer.virtualPageManager.addressIndex.totalVirtualSize);
+      console.log('loadContent - buffer.virtualPageManager.getTotalSize():', (buffer as any).virtualPageManager.getTotalSize());
+      console.log('loadContent - buffer.virtualPageManager.addressIndex.totalVirtualSize:', (buffer as any).virtualPageManager.addressIndex.totalVirtualSize);
       console.log('loadContent - expected size:', expectedSize);
       
       expect(buffer.totalSize).toBe(expectedSize);
       expect(buffer.getTotalSize()).toBe(expectedSize);
-      expect(buffer.virtualPageManager.getTotalSize()).toBe(expectedSize);
-      expect(buffer.virtualPageManager.addressIndex.totalVirtualSize).toBe(expectedSize);
+      expect((buffer as any).virtualPageManager.getTotalSize()).toBe(expectedSize);
+      expect((buffer as any).virtualPageManager.addressIndex.totalVirtualSize).toBe(expectedSize);
     });
 
     test('should track size correctly when using loadBinaryContent', async () => {
@@ -80,14 +80,14 @@ describe('PagedBuffer - Size Tracking Verification', () => {
       // Check all size tracking methods
       console.log('loadBinaryContent - buffer.totalSize:', buffer.totalSize);
       console.log('loadBinaryContent - buffer.getTotalSize():', buffer.getTotalSize());
-      console.log('loadBinaryContent - buffer.virtualPageManager.getTotalSize():', buffer.virtualPageManager.getTotalSize());
-      console.log('loadBinaryContent - buffer.virtualPageManager.addressIndex.totalVirtualSize:', buffer.virtualPageManager.addressIndex.totalVirtualSize);
+      console.log('loadBinaryContent - buffer.virtualPageManager.getTotalSize():', (buffer as any).virtualPageManager.getTotalSize());
+      console.log('loadBinaryContent - buffer.virtualPageManager.addressIndex.totalVirtualSize:', (buffer as any).virtualPageManager.addressIndex.totalVirtualSize);
       console.log('loadBinaryContent - expected size:', expectedSize);
       
       expect(buffer.totalSize).toBe(expectedSize);
       expect(buffer.getTotalSize()).toBe(expectedSize);
-      expect(buffer.virtualPageManager.getTotalSize()).toBe(expectedSize);
-      expect(buffer.virtualPageManager.addressIndex.totalVirtualSize).toBe(expectedSize);
+      expect((buffer as any).virtualPageManager.getTotalSize()).toBe(expectedSize);
+      expect((buffer as any).virtualPageManager.addressIndex.totalVirtualSize).toBe(expectedSize);
     });
 
     test('should track size correctly when starting empty and inserting content', async () => {
@@ -96,13 +96,13 @@ describe('PagedBuffer - Size Tracking Verification', () => {
       
       console.log('Empty - buffer.totalSize:', buffer.totalSize);
       console.log('Empty - buffer.getTotalSize():', buffer.getTotalSize());
-      console.log('Empty - buffer.virtualPageManager.getTotalSize():', buffer.virtualPageManager.getTotalSize());
-      console.log('Empty - buffer.virtualPageManager.addressIndex.totalVirtualSize:', buffer.virtualPageManager.addressIndex.totalVirtualSize);
+      console.log('Empty - buffer.virtualPageManager.getTotalSize():', (buffer as any).virtualPageManager.getTotalSize());
+      console.log('Empty - buffer.virtualPageManager.addressIndex.totalVirtualSize:', (buffer as any).virtualPageManager.addressIndex.totalVirtualSize);
       
       expect(buffer.totalSize).toBe(0);
       expect(buffer.getTotalSize()).toBe(0);
-      expect(buffer.virtualPageManager.getTotalSize()).toBe(0);
-      expect(buffer.virtualPageManager.addressIndex.totalVirtualSize).toBe(0);
+      expect((buffer as any).virtualPageManager.getTotalSize()).toBe(0);
+      expect((buffer as any).virtualPageManager.addressIndex.totalVirtualSize).toBe(0);
       
       // Insert content
       await buffer.insertBytes(0, Buffer.from(testContent, 'utf8'));
@@ -110,14 +110,14 @@ describe('PagedBuffer - Size Tracking Verification', () => {
       // Check all size tracking methods after insertion
       console.log('After insert - buffer.totalSize:', buffer.totalSize);
       console.log('After insert - buffer.getTotalSize():', buffer.getTotalSize());
-      console.log('After insert - buffer.virtualPageManager.getTotalSize():', buffer.virtualPageManager.getTotalSize());
-      console.log('After insert - buffer.virtualPageManager.addressIndex.totalVirtualSize:', buffer.virtualPageManager.addressIndex.totalVirtualSize);
+      console.log('After insert - buffer.virtualPageManager.getTotalSize():', (buffer as any).virtualPageManager.getTotalSize());
+      console.log('After insert - buffer.virtualPageManager.addressIndex.totalVirtualSize:', (buffer as any).virtualPageManager.addressIndex.totalVirtualSize);
       console.log('After insert - expected size:', expectedSize);
       
       expect(buffer.totalSize).toBe(expectedSize);
       expect(buffer.getTotalSize()).toBe(expectedSize);
-      expect(buffer.virtualPageManager.getTotalSize()).toBe(expectedSize);
-      expect(buffer.virtualPageManager.addressIndex.totalVirtualSize).toBe(expectedSize);
+      expect((buffer as any).virtualPageManager.getTotalSize()).toBe(expectedSize);
+      expect((buffer as any).virtualPageManager.addressIndex.totalVirtualSize).toBe(expectedSize);
     });
 
     test('should track size correctly with multiple insertions', async () => {
@@ -140,8 +140,8 @@ describe('PagedBuffer - Size Tracking Verification', () => {
       // Verify all tracking methods are consistent
       expect(buffer.totalSize).toBe(expectedSize);
       expect(buffer.getTotalSize()).toBe(expectedSize);
-      expect(buffer.virtualPageManager.getTotalSize()).toBe(expectedSize);
-      expect(buffer.virtualPageManager.addressIndex.totalVirtualSize).toBe(expectedSize);
+      expect((buffer as any).virtualPageManager.getTotalSize()).toBe(expectedSize);
+      expect((buffer as any).virtualPageManager.addressIndex.totalVirtualSize).toBe(expectedSize);
     });
   });
 
@@ -152,13 +152,13 @@ describe('PagedBuffer - Size Tracking Verification', () => {
       console.log('Empty content - all sizes:');
       console.log('  buffer.totalSize:', buffer.totalSize);
       console.log('  buffer.getTotalSize():', buffer.getTotalSize());
-      console.log('  buffer.virtualPageManager.getTotalSize():', buffer.virtualPageManager.getTotalSize());
-      console.log('  addressIndex.totalVirtualSize:', buffer.virtualPageManager.addressIndex.totalVirtualSize);
+      console.log('  buffer.virtualPageManager.getTotalSize():', (buffer as any).virtualPageManager.getTotalSize());
+      console.log('  addressIndex.totalVirtualSize:', (buffer as any).virtualPageManager.addressIndex.totalVirtualSize);
       
       expect(buffer.totalSize).toBe(0);
       expect(buffer.getTotalSize()).toBe(0);
-      expect(buffer.virtualPageManager.getTotalSize()).toBe(0);
-      expect(buffer.virtualPageManager.addressIndex.totalVirtualSize).toBe(0);
+      expect((buffer as any).virtualPageManager.getTotalSize()).toBe(0);
+      expect((buffer as any).virtualPageManager.addressIndex.totalVirtualSize).toBe(0);
     });
 
     test('should handle single character correctly', async () => {
@@ -167,13 +167,13 @@ describe('PagedBuffer - Size Tracking Verification', () => {
       console.log('Single char - all sizes:');
       console.log('  buffer.totalSize:', buffer.totalSize);
       console.log('  buffer.getTotalSize():', buffer.getTotalSize());
-      console.log('  buffer.virtualPageManager.getTotalSize():', buffer.virtualPageManager.getTotalSize());
-      console.log('  addressIndex.totalVirtualSize:', buffer.virtualPageManager.addressIndex.totalVirtualSize);
+      console.log('  buffer.virtualPageManager.getTotalSize():', (buffer as any).virtualPageManager.getTotalSize());
+      console.log('  addressIndex.totalVirtualSize:', (buffer as any).virtualPageManager.addressIndex.totalVirtualSize);
       
       expect(buffer.totalSize).toBe(1);
       expect(buffer.getTotalSize()).toBe(1);
-      expect(buffer.virtualPageManager.getTotalSize()).toBe(1);
-      expect(buffer.virtualPageManager.addressIndex.totalVirtualSize).toBe(1);
+      expect((buffer as any).virtualPageManager.getTotalSize()).toBe(1);
+      expect((buffer as any).virtualPageManager.addressIndex.totalVirtualSize).toBe(1);
     });
 
     test('should handle unicode content correctly', async () => {
@@ -186,13 +186,13 @@ describe('PagedBuffer - Size Tracking Verification', () => {
       console.log('Unicode content - all sizes:');
       console.log('  buffer.totalSize:', buffer.totalSize);
       console.log('  buffer.getTotalSize():', buffer.getTotalSize());
-      console.log('  buffer.virtualPageManager.getTotalSize():', buffer.virtualPageManager.getTotalSize());
-      console.log('  addressIndex.totalVirtualSize:', buffer.virtualPageManager.addressIndex.totalVirtualSize);
+      console.log('  buffer.virtualPageManager.getTotalSize():', (buffer as any).virtualPageManager.getTotalSize());
+      console.log('  addressIndex.totalVirtualSize:', (buffer as any).virtualPageManager.addressIndex.totalVirtualSize);
       
       expect(buffer.totalSize).toBe(expectedSize);
       expect(buffer.getTotalSize()).toBe(expectedSize);
-      expect(buffer.virtualPageManager.getTotalSize()).toBe(expectedSize);
-      expect(buffer.virtualPageManager.addressIndex.totalVirtualSize).toBe(expectedSize);
+      expect((buffer as any).virtualPageManager.getTotalSize()).toBe(expectedSize);
+      expect((buffer as any).virtualPageManager.addressIndex.totalVirtualSize).toBe(expectedSize);
     });
 
     test('should handle operations that change size', async () => {
@@ -215,8 +215,8 @@ describe('PagedBuffer - Size Tracking Verification', () => {
       
       // Verify all tracking methods are consistent
       expect(buffer.totalSize).toBe(afterInsertSize);
-      expect(buffer.virtualPageManager.getTotalSize()).toBe(afterInsertSize);
-      expect(buffer.virtualPageManager.addressIndex.totalVirtualSize).toBe(afterInsertSize);
+      expect((buffer as any).virtualPageManager.getTotalSize()).toBe(afterInsertSize);
+      expect((buffer as any).virtualPageManager.addressIndex.totalVirtualSize).toBe(afterInsertSize);
     });
   });
 
@@ -227,10 +227,10 @@ describe('PagedBuffer - Size Tracking Verification', () => {
       
       console.log('Line tracking test - sizes:');
       console.log('  buffer.getTotalSize():', buffer.getTotalSize());
-      console.log('  vpm.getTotalSize():', buffer.virtualPageManager.getTotalSize());
+      console.log('  vpm.getTotalSize():', (buffer as any).virtualPageManager.getTotalSize());
       
       // Only test line tracking if size is correct
-      if (buffer.virtualPageManager.getTotalSize() > 0) {
+      if ((buffer as any).virtualPageManager.getTotalSize() > 0) {
         const lineCount = await buffer.getLineCount();
         
         console.log('  lineCount:', lineCount);
@@ -239,16 +239,16 @@ describe('PagedBuffer - Size Tracking Verification', () => {
         expect(lineCount).toBeGreaterThan(0);
       } else {
         console.log('  Size is 0, skipping line tracking tests');
-        expect(buffer.virtualPageManager.getTotalSize()).toBeGreaterThan(0);
+        expect((buffer as any).virtualPageManager.getTotalSize()).toBeGreaterThan(0);
       }
     });
   });
 });
 
 describe('PagedBuffer - File Operations', () => {
-  let buffer;
-  let tempDir;
-  let testFile;
+  let buffer: PagedBuffer;
+  let tempDir: string;
+  let testFile: string;
 
   beforeEach(async () => {
     buffer = new PagedBuffer(1024);
@@ -273,7 +273,7 @@ describe('PagedBuffer - File Operations', () => {
       
       const savedContent = await fs.readFile(testFile, 'utf8');
       expect(savedContent).toBe(content);
-      expect(buffer.getState()).toBe(BufferState.CLEAN); // check
+      expect(buffer.getState()).toBe(BufferState.CLEAN);
       expect(buffer.hasChanges()).toBe(false);
       expect(buffer.filename).toBe(testFile);
     });
@@ -286,7 +286,7 @@ describe('PagedBuffer - File Operations', () => {
       
       const savedContent = await fs.readFile(testFile, 'utf8');
       expect(savedContent).toBe('Hello, World!');
-      expect(buffer.getState()).toBe(BufferState.CLEAN); // check
+      expect(buffer.getState()).toBe(BufferState.CLEAN);
       expect(buffer.hasChanges()).toBe(false);
     });
 
@@ -365,7 +365,7 @@ describe('PagedBuffer - File Operations', () => {
       
       expect(buffer.fileChecksum).toBeTruthy();
       expect(typeof buffer.fileChecksum).toBe('string');
-      expect(buffer.fileChecksum.length).toBe(32); // MD5 hex length
+      expect(buffer.fileChecksum?.length).toBe(32); // MD5 hex length
     });
 
     test('should handle empty file checksum', async () => {
@@ -379,8 +379,8 @@ describe('PagedBuffer - File Operations', () => {
 });
 
 describe('PagedBuffer - Storage Layer Integration', () => {
-  let buffer;
-  let tempDir;
+  let buffer: PagedBuffer;
+  let tempDir: string;
 
   beforeEach(async () => {
     tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'storage-test-'));
@@ -438,7 +438,7 @@ describe('PagedBuffer - Storage Layer Integration', () => {
 });
 
 describe('PagedBuffer - Comprehensive Integration Tests', () => {
-  let buffer;
+  let buffer: PagedBuffer;
 
   beforeEach(() => {
     buffer = new PagedBuffer(128);
@@ -513,12 +513,12 @@ describe('PagedBuffer - Comprehensive Integration Tests', () => {
       buffer.loadContent(totalContent);
       
       // Rapidly access random positions to stress page loading
-      const accessPattern = [];
+      const accessPattern: number[] = [];
       for (let i = 0; i < 50; i++) {
         const pos = Math.floor(Math.random() * totalContent.length);
         accessPattern.push(pos);
         const chunk = await buffer.getBytes(pos, Math.min(pos + 10, totalContent.length));
-        expect(chunk.length).toBeGreaterThan(0);
+        expect(Buffer.isBuffer(chunk) ? chunk.length : chunk.data.length).toBeGreaterThan(0);
       }
       
       // Buffer should still be functional
@@ -560,8 +560,6 @@ describe('PagedBuffer - Comprehensive Integration Tests', () => {
 
   describe('Resource Management', () => {
     test('should properly clean up resources', async () => {
-      const initialStats = buffer.getMemoryStats();
-      
       // Create and modify content
       buffer.loadContent('Resource test content');
       await buffer.insertBytes(0, Buffer.from('Modified '));
@@ -607,7 +605,7 @@ describe('PagedBuffer - Comprehensive Integration Tests', () => {
 });
 
 describe('PagedBuffer - Transaction System', () => {
-  let buffer;
+  let buffer: PagedBuffer;
 
   beforeEach(() => {
     buffer = new PagedBuffer(64);
@@ -620,7 +618,7 @@ describe('PagedBuffer - Transaction System', () => {
       buffer.beginUndoTransaction('Test Transaction');
       
       expect(buffer.inUndoTransaction()).toBe(true);
-      expect(buffer.getCurrentUndoTransaction().name).toBe('Test Transaction');
+      expect(buffer.getCurrentUndoTransaction()?.name).toBe('Test Transaction');
       
       await buffer.insertBytes(0, Buffer.from('New '));
       
@@ -672,7 +670,7 @@ describe('PagedBuffer - Transaction System', () => {
 });
 
 describe('PagedBuffer - Memory Management', () => {
-  let buffer;
+  let buffer: PagedBuffer;
 
   beforeEach(() => {
     buffer = new PagedBuffer(64, null, 2); // Small page size and memory limit for testing
@@ -706,7 +704,7 @@ describe('PagedBuffer - Memory Management', () => {
     });
 
     test('should handle memory pressure notifications appropriately', async () => {
-      let evictionNotifications = [];
+      const evictionNotifications: any[] = [];
       buffer.onNotification((notification) => {
         if (notification.type === 'page_evicted') {
           evictionNotifications.push(notification);
@@ -795,7 +793,7 @@ describe('PagedBuffer - Memory Management', () => {
 });
 
 describe('PagedBuffer - Text Features (UTF-8)', () => {
-  let buffer;
+  let buffer: PagedBuffer;
 
   beforeEach(() => {
     buffer = new PagedBuffer(64);
@@ -845,19 +843,19 @@ describe('PagedBuffer - Text Features (UTF-8)', () => {
       const line4 = buffer.getLineInfo(4);
       
       expect(line1).toBeTruthy();
-      expect(line1.lineNumber).toBe(1);
-      expect(line1.byteStart).toBe(0);
-      expect(line1.isExact).toBe(true);
+      expect(line1?.lineNumber).toBe(1);
+      expect(line1?.byteStart).toBe(0);
+      expect(line1?.isExact).toBe(true);
       
       expect(line2).toBeTruthy();
-      expect(line2.lineNumber).toBe(2);
-      expect(line2.byteStart).toBe(7);
-      expect(line2.isExact).toBe(true);
+      expect(line2?.lineNumber).toBe(2);
+      expect(line2?.byteStart).toBe(7);
+      expect(line2?.isExact).toBe(true);
       
       expect(line4).toBeTruthy();
-      expect(line4.lineNumber).toBe(4);
-      expect(line4.byteStart).toBe(21);
-      expect(line4.isExact).toBe(true);
+      expect(line4?.lineNumber).toBe(4);
+      expect(line4?.byteStart).toBe(21);
+      expect(line4?.isExact).toBe(true);
     });
 
     test('should get multiple lines at once', async () => {
@@ -867,9 +865,9 @@ describe('PagedBuffer - Text Features (UTF-8)', () => {
       const lines = buffer.getMultipleLines(1, 3);
       
       expect(lines).toHaveLength(3);
-      expect(lines[0].lineNumber).toBe(1);
-      expect(lines[1].lineNumber).toBe(2);
-      expect(lines[2].lineNumber).toBe(3);
+      expect(lines[0]?.lineNumber).toBe(1);
+      expect(lines[1]?.lineNumber).toBe(2);
+      expect(lines[2]?.lineNumber).toBe(3);
     });
   });
 
@@ -912,7 +910,7 @@ describe('PagedBuffer - Text Features (UTF-8)', () => {
       
       // Should clamp to end of line
       const line1Info = buffer.getLineInfo(1);
-      expect(bytePos).toBeLessThanOrEqual(line1Info.byteEnd);
+      expect(bytePos).toBeLessThanOrEqual(line1Info?.byteEnd ?? 0);
     });
 
     test('should handle positions beyond buffer end', async () => {
@@ -974,12 +972,12 @@ describe('PagedBuffer - Text Features (UTF-8)', () => {
       const lineInfo = buffer.getLineInfo(1);
       
       // Ensure exact loading with seekAddress
-      const loaded = await buffer.seekAddress(lineInfo.byteStart);
+      const loaded = await buffer.seekAddress(lineInfo?.byteStart ?? 0);
       expect(loaded).toBe(true);
       
       // Get exact line info after seeking
       const exactLineInfo = buffer.getLineInfo(1);
-      expect(exactLineInfo.isExact).toBe(true);
+      expect(exactLineInfo?.isExact).toBe(true);
     });
 
     test('should handle invalid addresses in seekAddress', async () => {
@@ -994,85 +992,8 @@ describe('PagedBuffer - Text Features (UTF-8)', () => {
   });
 });
 
-describe('PagedBuffer - Comprehensive Integration Tests', () => {
-  let buffer;
-
-  beforeEach(() => {
-    buffer = new PagedBuffer(128);
-    buffer.enableUndo({
-      mergeTimeWindow: 15000,
-      mergePositionWindow: 0
-    });
-  });
-
-  describe('Complex Edit Scenarios', () => {
-    test('should handle realistic text editing workflow', async () => {
-      // Start with some content
-      const initialContent = 'Hello World\nThis is a test\nEnd of file';
-      buffer.loadContent(initialContent);
-      
-      // Simulate user editing workflow
-      buffer.beginUndoTransaction('Add header');
-      await buffer.insertBytes(0, Buffer.from('# Document Title\n\n'));
-      buffer.commitUndoTransaction();
-      
-      buffer.beginUndoTransaction('Edit middle line');
-      
-      // Find and replace using line operations
-      const line3Info = buffer.getLineInfo(4); // Line with "This is a test"
-      if (line3Info) {
-        const lineContent = await buffer.getBytes(line3Info.byteStart, line3Info.byteEnd);
-        const lineStr = lineContent.toString();
-        const testIndex = lineStr.indexOf('This is a test');
-        
-        if (testIndex !== -1) {
-          const globalIndex = line3Info.byteStart + testIndex;
-          await buffer.deleteBytes(globalIndex, globalIndex + 'This is a test'.length);
-          await buffer.insertBytes(globalIndex, Buffer.from('This is modified content'));
-        }
-      }
-      
-      buffer.commitUndoTransaction();
-      
-      // Verify final content
-      const finalContent = await buffer.getBytes(0, buffer.getTotalSize());
-      const expectedContent = '# Document Title\n\nHello World\nThis is modified content\nEnd of file';
-      expect(finalContent.toString()).toBe(expectedContent);
-      
-      // Verify undo works correctly
-      await buffer.undo(); // Undo edit
-      await buffer.undo(); // Undo header addition
-      
-      const undoneContent = await buffer.getBytes(0, buffer.getTotalSize());
-      expect(undoneContent.toString()).toBe(initialContent);
-    });
-
-    test('should handle mixed binary and text operations', async () => {
-      // Load binary content using proper method
-      const binaryData = Buffer.from([0x00, 0x01, 0x02, 0xFF, 0xFE, 0xFD]);
-      buffer.loadBinaryContent(binaryData);
-      
-      // Insert more binary data
-      await buffer.insertBytes(3, Buffer.from([0xAA, 0xBB, 0xCC]));
-      
-      // Verify binary integrity
-      const result = await buffer.getBytes(0, buffer.getTotalSize());
-      const expected = Buffer.from([0x00, 0x01, 0x02, 0xAA, 0xBB, 0xCC, 0xFF, 0xFE, 0xFD]);
-      expect(result).toEqual(expected);
-      
-      // Line operations should still work (return single line for binary data)
-      const lineCount = buffer.getLineCount();
-      expect(lineCount).toBe(1);
-      
-      const lineInfo = buffer.getLineInfo(1);
-      expect(lineInfo.byteStart).toBe(0);
-      expect(lineInfo.byteEnd).toBe(buffer.getTotalSize());
-    });
-  });
-});
-
 describe('PagedBuffer - Error Handling and Edge Cases', () => {
-  let buffer;
+  let buffer: PagedBuffer;
 
   beforeEach(() => {
     buffer = new PagedBuffer(64);
@@ -1092,7 +1013,11 @@ describe('PagedBuffer - Error Handling and Edge Cases', () => {
       
       // Should handle gracefully without throwing
       const result = await buffer.getBytes(10, 20);
-      expect(result.length).toBe(0);
+      if (Buffer.isBuffer(result)) {
+        expect(result.length).toBe(0);
+      } else {
+        expect(result.data.length).toBe(0);
+      }
       
       await expect(buffer.insertBytes(100, Buffer.from('x'))).rejects.toThrow('beyond end of buffer');
     });
@@ -1109,7 +1034,11 @@ describe('PagedBuffer - Error Handling and Edge Cases', () => {
       buffer.loadContent('');
       
       const content = await buffer.getBytes(0, 0);
-      expect(content.length).toBe(0);
+      if (Buffer.isBuffer(content)) {
+        expect(content.length).toBe(0);
+      } else {
+        expect(content.data.length).toBe(0);
+      }
       
       await buffer.insertBytes(0, Buffer.from('first'));
       const newContent = await buffer.getBytes(0, buffer.getTotalSize());
@@ -1150,8 +1079,11 @@ describe('PagedBuffer - Error Handling and Edge Cases', () => {
       
       // Delete across page boundaries
       const deleted = await buffer.deleteBytes(50, 150);
-      
-      expect(deleted.length).toBe(100);
+      if (Buffer.isBuffer(deleted)) {
+        expect(deleted.length).toBe(100);
+      } else {
+        expect(deleted.data.length).toBe(100);
+      }
       expect(buffer.getTotalSize()).toBe(100);
     });
   });
@@ -1167,7 +1099,11 @@ describe('PagedBuffer - Error Handling and Edge Cases', () => {
       await buffer.insertBytes(65, Buffer.from('INSERT'));
       
       const result = await buffer.getBytes(60, 80);
-      expect(result.length).toBeGreaterThan(0);
+      if (Buffer.isBuffer(result)) {
+        expect(result.length).toBeGreaterThan(0);
+      } else {
+        expect(result.data.length).toBeGreaterThan(0);
+      }
     });
 
     test('should handle corrupted UTF-8 gracefully', async () => {
@@ -1177,7 +1113,11 @@ describe('PagedBuffer - Error Handling and Edge Cases', () => {
       
       // Should not throw when reading
       const result = await buffer.getBytes(0, invalidUtf8.length);
-      expect(result.length).toBe(invalidUtf8.length);
+      if (Buffer.isBuffer(result)) {
+        expect(result.length).toBe(invalidUtf8.length);
+      } else {
+        expect(result.data.length).toBe(invalidUtf8.length);
+      }
     });
   });
 
@@ -1186,7 +1126,7 @@ describe('PagedBuffer - Error Handling and Edge Cases', () => {
       buffer.loadContent('base content');
       
       // Simulate rapid typing
-      const operations = [];
+      const operations: Promise<void>[] = [];
       for (let i = 0; i < 10; i++) {
         operations.push(buffer.insertBytes(i, Buffer.from(i.toString())));
       }
@@ -1194,7 +1134,11 @@ describe('PagedBuffer - Error Handling and Edge Cases', () => {
       await Promise.all(operations);
       
       const result = await buffer.getBytes(0, buffer.getTotalSize());
-      expect(result.length).toBeGreaterThan(10);
+      if (Buffer.isBuffer(result)) {
+        expect(result.length).toBeGreaterThan(10);
+      } else {
+        expect(result.data.length).toBeGreaterThan(10);
+      }
     });
   });
 
@@ -1218,8 +1162,8 @@ describe('PagedBuffer - Error Handling and Edge Cases', () => {
 });
 
 describe('PagedBuffer - Notification System', () => {
-  let buffer;
-  let notifications;
+  let buffer: PagedBuffer;
+  let notifications: any[];
 
   beforeEach(() => {
     buffer = new PagedBuffer(64, null, 2); // Small memory limit for testing

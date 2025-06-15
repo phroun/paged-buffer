@@ -4,30 +4,108 @@
  * @version 2.2.0
  */
 
-const { BufferOperation, OperationType } = require('./buffer-operation');
-const logger = require('./utils/logger');
+import { BufferOperation, OperationType } from './buffer-operation';
+import { logger } from './utils/logger';
+import {
+  type MarkTuple,
+  type ILineAndMarksManager
+} from './types/common';
+
+// Type definitions for the undo system
+interface UndoConfig {
+  maxUndoLevels?: number;
+  mergeTimeWindow?: number;
+  mergePositionWindow?: number;
+}
+
+interface TransactionOptions {
+  [key: string]: any;
+}
+
+interface TransactionInfo {
+  name: string;
+  operationCount: number;
+  startTime: number;
+  duration: number;
+  options: TransactionOptions;
+  hasMarksSnapshot: boolean;
+  hasLinesSnapshot: boolean;
+}
+
+interface UndoStats {
+  undoGroups: number;
+  redoGroups: number;
+  totalUndoOperations: number;
+  totalRedoOperations: number;
+  currentGroupOperations: number;
+  currentTransactionOperations: number;
+  memoryUsage: number;
+  maxUndoLevels: number;
+  groupsWithMarksSnapshots: number;
+  groupsWithLinesSnapshots: number;
+  hasEnhancedTracking: boolean;
+}
+
+interface OperationDebugInfo {
+  type: OperationType;
+  position: number;
+  dataLength: number;
+  originalDataLength: number;
+}
+
+interface GroupDebugInfo {
+  id: string;
+  name: string | null;
+  operationCount: number;
+  isFromTransaction: boolean;
+  hasMarksSnapshot: boolean;
+  hasLinesSnapshot: boolean;
+  marksCount: number;
+  operations?: OperationDebugInfo[];
+}
+
+interface UndoDebugInfo {
+  undoStack: GroupDebugInfo[];
+  redoStack: GroupDebugInfo[];
+  activeTransaction: TransactionInfo | null;
+  stats: UndoStats;
+}
+
+interface BufferInterface {
+  virtualPageManager: {
+    deleteRange(start: number, end: number): Promise<Buffer>;
+    insertAt(position: number, data: Buffer): Promise<number>;
+  };
+  lineAndMarksManager?: ILineAndMarksManager;
+  markAsModified(): void;
+  totalSize: number;
+  getTotalSize(): number;
+}
 
 /**
  * Groups related operations together for undo/redo
  */
 class OperationGroup {
-  constructor(id, name = null) {
+  public id: string;
+  public name: string | null;
+  public operations: BufferOperation[] = [];
+  public timestamp: number;
+  public isFromTransaction: boolean = false;
+  
+  // Enhanced: Store marks state before and after group execution
+  public marksSnapshot: MarkTuple[] | null = null; // Will be set when group is recorded
+  public linesSnapshot: number | null = null; // Line count snapshot for verification
+
+  constructor(id: string, name: string | null = null) {
     this.id = id;
     this.name = name;
-    this.operations = [];
     this.timestamp = Date.now();
-    this.isFromTransaction = false;
-    
-    // Enhanced: Store marks state before and after group execution
-    this.marksSnapshot = null; // Will be set when group is recorded
-    this.linesSnapshot = null; // Line count snapshot for verification
   }
 
   /**
    * Calculate total memory usage of this group
-   * @returns {number} - Estimated memory usage in bytes
    */
-  getMemoryUsage() {
+  getMemoryUsage(): number {
     let total = 0;
     for (const op of this.operations) {
       if (op.data) total += op.data.length;
@@ -44,17 +122,15 @@ class OperationGroup {
 
   /**
    * Set marks snapshot for this group
-   * @param {Array} marks - Current marks state
    */
-  setMarksSnapshot(marks) {
-    this.marksSnapshot = marks.map(mark => ({ ...mark })); // Deep copy
+  setMarksSnapshot(marks: MarkTuple[]): void {
+    this.marksSnapshot = marks.map(mark => [...mark] as MarkTuple); // Deep copy
   }
 
   /**
    * Set lines snapshot for this group
-   * @param {number} lineCount - Current line count
    */
-  setLinesSnapshot(lineCount) {
+  setLinesSnapshot(lineCount: number): void {
     this.linesSnapshot = lineCount;
   }
 }
@@ -63,32 +139,33 @@ class OperationGroup {
  * Transaction for grouping operations
  */
 class OperationTransaction {
-  constructor(name, options = {}) {
+  public name: string;
+  public operations: BufferOperation[] = [];
+  public startTime: number;
+  public options: TransactionOptions;
+  
+  // Enhanced: Track marks state at transaction start
+  public initialMarksSnapshot: MarkTuple[] | null = null;
+  public initialLinesSnapshot: number | null = null;
+
+  constructor(name: string, options: TransactionOptions = {}) {
     this.name = name;
-    this.operations = [];
     this.startTime = Date.now();
     this.options = options;
-    
-    // Enhanced: Track marks state at transaction start
-    this.initialMarksSnapshot = null;
-    this.initialLinesSnapshot = null;
   }
 
   /**
    * Set initial state snapshots
-   * @param {Array} marks - Initial marks state
-   * @param {number} lineCount - Initial line count
    */
-  setInitialState(marks, lineCount) {
-    this.initialMarksSnapshot = marks.map(mark => ({ ...mark }));
+  setInitialState(marks: MarkTuple[], lineCount: number): void {
+    this.initialMarksSnapshot = marks.map(mark => [...mark] as MarkTuple);
     this.initialLinesSnapshot = lineCount;
   }
 
   /**
    * Get info about this transaction
-   * @returns {Object} - Transaction info
    */
-  getInfo() {
+  getInfo(): TransactionInfo {
     return {
       name: this.name,
       operationCount: this.operations.length,
@@ -105,34 +182,36 @@ class OperationTransaction {
  * Enhanced Buffer Undo/Redo System with Line and Marks Integration
  */
 class BufferUndoSystem {
-  constructor(buffer, maxUndoLevels = 50) {
+  private buffer: BufferInterface;
+  private maxUndoLevels: number;
+  
+  // Undo/Redo stacks - contain only OperationGroup objects
+  private undoStack: OperationGroup[] = [];
+  private redoStack: OperationGroup[] = [];
+  
+  // Transaction support
+  private activeTransaction: OperationTransaction | null = null;
+  
+  // IMPROVED DEFAULTS: More conservative merge settings
+  private mergeTimeWindow: number = 5000;      // Keep reasonable time window for rapid typing
+  private mergePositionWindow: number = 0;     // DEFAULT TO ZERO - merge adjacent only
+  
+  // State tracking
+  private isUndoing: boolean = false;
+  private groupIdCounter: number = 0;
+  
+  // Clock function (can be mocked for testing)
+  private clockFunction: () => number = () => Date.now();
+
+  constructor(buffer: BufferInterface, maxUndoLevels: number = 50) {
     this.buffer = buffer;
     this.maxUndoLevels = maxUndoLevels;
-    
-    // Undo/Redo stacks - contain only OperationGroup objects
-    this.undoStack = [];
-    this.redoStack = [];
-    
-    // Transaction support
-    this.activeTransaction = null;
-    
-    // IMPROVED DEFAULTS: More conservative merge settings
-    this.mergeTimeWindow = 5000;      // Keep reasonable time window for rapid typing
-    this.mergePositionWindow = 0;     // DEFAULT TO ZERO - merge adjacent only
-    
-    // State tracking
-    this.isUndoing = false;
-    this.groupIdCounter = 0;
-    
-    // Clock function (can be mocked for testing)
-    this.clockFunction = () => Date.now();
   }
 
   /**
    * Configure the undo system
-   * @param {Object} config - Configuration options
    */
-  configure(config) {
+  configure(config: UndoConfig): void {
     if (config.maxUndoLevels !== undefined) {
       this.maxUndoLevels = config.maxUndoLevels;
     }
@@ -146,34 +225,30 @@ class BufferUndoSystem {
 
   /**
    * Set custom clock function (for testing)
-   * @param {Function} clockFn - Function that returns current time
    */
-  setClock(clockFn) {
+  setClock(clockFn: () => number): void {
     this.clockFunction = clockFn;
   }
 
   /**
    * Get current time from clock function
-   * @returns {number} - Current timestamp
    */
-  getClock() {
+  getClock(): number {
     return this.clockFunction();
   }
 
   /**
    * Generate unique group ID
-   * @returns {string} - Unique group ID
    */
-  _generateGroupId() {
+  private _generateGroupId(): string {
     return `group_${++this.groupIdCounter}_${this.getClock()}`;
   }
 
   /**
    * CRITICAL FIX: Capture current marks state for snapshot BEFORE any operation recording
    * This must be called by buffer operations BEFORE they execute
-   * @returns {Array} - Current marks snapshot
    */
-  captureCurrentMarksState() {
+  captureCurrentMarksState(): MarkTuple[] {
     if (!this.buffer.lineAndMarksManager) {
       return [];
     }
@@ -181,20 +256,20 @@ class BufferUndoSystem {
     try {
       return this.buffer.lineAndMarksManager.getAllMarks();
     } catch (error) {
-      logger.warn('Failed to capture current marks state:', error.message);
+      logger.warn('Failed to capture current marks state:', (error as Error).message);
       return [];
     }
   }
 
   /**
    * Record an insert operation with enhanced tracking
-   * @param {number} position - Insert position
-   * @param {Buffer} data - Inserted data
-   * @param {number} timestamp - Optional timestamp (defaults to current time)
-   * @param {Array} preOpMarksSnapshot - Pre-operation marks snapshot
-   * @returns {BufferOperation} - The created operation
    */
-  recordInsert(position, data, timestamp = null, preOpMarksSnapshot = null) {
+  recordInsert(
+    position: number,
+    data: Buffer,
+    timestamp: number | null = null,
+    preOpMarksSnapshot: MarkTuple[] | null = null
+  ): BufferOperation {
     const operation = new BufferOperation(
       OperationType.INSERT, 
       position, 
@@ -210,13 +285,13 @@ class BufferUndoSystem {
 
   /**
    * Record a delete operation with enhanced tracking
-   * @param {number} position - Delete position
-   * @param {Buffer} deletedData - Data that was deleted
-   * @param {number} timestamp - Optional timestamp (defaults to current time)
-   * @param {Array} preOpMarksSnapshot - Pre-operation marks snapshot
-   * @returns {BufferOperation} - The created operation
    */
-  recordDelete(position, deletedData, timestamp = null, preOpMarksSnapshot = null) {
+  recordDelete(
+    position: number,
+    deletedData: Buffer,
+    timestamp: number | null = null,
+    preOpMarksSnapshot: MarkTuple[] | null = null
+  ): BufferOperation {
     const operation = new BufferOperation(
       OperationType.DELETE, 
       position, 
@@ -232,14 +307,14 @@ class BufferUndoSystem {
 
   /**
    * Record an overwrite operation with enhanced tracking
-   * @param {number} position - Overwrite position
-   * @param {Buffer} newData - New data
-   * @param {Buffer} originalData - Original data that was overwritten
-   * @param {number} timestamp - Optional timestamp (defaults to current time)
-   * @param {Array} preOpMarksSnapshot - Pre-operation marks snapshot
-   * @returns {BufferOperation} - The created operation
    */
-  recordOverwrite(position, newData, originalData, timestamp = null, preOpMarksSnapshot = null) {
+  recordOverwrite(
+    position: number,
+    newData: Buffer,
+    originalData: Buffer,
+    timestamp: number | null = null,
+    preOpMarksSnapshot: MarkTuple[] | null = null
+  ): BufferOperation {
     const operation = new BufferOperation(
       OperationType.OVERWRITE, 
       position, 
@@ -255,11 +330,8 @@ class BufferUndoSystem {
 
   /**
    * Enhanced operation recording with marks and lines tracking - FIXED SNAPSHOT TIMING
-   * @param {BufferOperation} operation - Operation to record
-   * @param {Array} preOpMarksSnapshot - Pre-operation marks snapshot
-   * @private
    */
-  _recordOperation(operation, preOpMarksSnapshot = null) {
+  private _recordOperation(operation: BufferOperation, preOpMarksSnapshot: MarkTuple[] | null = null): void {
     // Don't record operations during undo/redo
     if (this.isUndoing) {
       return;
@@ -318,7 +390,7 @@ class BufferUndoSystem {
         const lineCount = this.buffer.lineAndMarksManager.getTotalLineCount();
         newGroup.setLinesSnapshot(lineCount);
       } catch (error) {
-        logger.warn('Failed to capture line count snapshot:', error.message);
+        logger.warn('Failed to capture line count snapshot:', (error as Error).message);
       }
     }
     
@@ -336,7 +408,7 @@ class BufferUndoSystem {
   /**
    * Helper method to get distance between operations
    */
-  _getOperationDistance(op1, op2) {
+  private _getOperationDistance(op1: BufferOperation, op2: BufferOperation): number {
     try {
       return op1.getLogicalDistance(op2);
     } catch (error) {
@@ -348,7 +420,7 @@ class BufferUndoSystem {
   /**
    * More conservative contiguous operation detection
    */
-  _areContiguousOperations(op1, op2) {
+  private _areContiguousOperations(op1: BufferOperation, op2: BufferOperation): boolean {
     // Only insert operations of the same type can be physically merged
     if (op1.type !== 'insert' || op2.type !== 'insert') {
       return false;
@@ -369,10 +441,8 @@ class BufferUndoSystem {
 
   /**
    * Begin a new transaction with state tracking
-   * @param {string} name - Transaction name
-   * @param {Object} options - Transaction options
    */
-  beginUndoTransaction(name, options = {}) {
+  beginUndoTransaction(name: string, options: TransactionOptions = {}): void {
     if (this.activeTransaction) {
       throw new Error('Cannot start transaction - another transaction is already active');
     }
@@ -387,17 +457,15 @@ class BufferUndoSystem {
         const lineCount = this.buffer.lineAndMarksManager.getTotalLineCount();
         this.activeTransaction.setInitialState(allMarks, lineCount);
       } catch (error) {
-        logger.warn('Failed to capture initial transaction state:', error.message);
+        logger.warn('Failed to capture initial transaction state:', (error as Error).message);
       }
     }
   }
 
   /**
    * Commit the current transaction with enhanced state tracking
-   * @param {string} finalName - Optional final name for the group
-   * @returns {boolean} - True if transaction was committed
    */
-  commitUndoTransaction(finalName = null) {
+  commitUndoTransaction(finalName: string | null = null): boolean {
     if (!this.activeTransaction) {
       return false;
     }
@@ -433,9 +501,8 @@ class BufferUndoSystem {
 
   /**
    * Enhanced rollback with marks and lines restoration
-   * @returns {Promise<boolean>} - True if transaction was rolled back
    */
-  async rollbackUndoTransaction() {
+  async rollbackUndoTransaction(): Promise<boolean> {
     if (!this.activeTransaction) {
       return false;
     }
@@ -463,17 +530,15 @@ class BufferUndoSystem {
 
   /**
    * Check if currently in a transaction
-   * @returns {boolean} - True if in transaction
    */
-  inTransaction() {
+  inTransaction(): boolean {
     return this.activeTransaction !== null;
   }
 
   /**
    * Get current transaction info
-   * @returns {Object|null} - Transaction info or null
    */
-  getCurrentTransaction() {
+  getCurrentTransaction(): TransactionInfo | null {
     return this.activeTransaction ? this.activeTransaction.getInfo() : null;
   }
 
@@ -481,9 +546,8 @@ class BufferUndoSystem {
 
   /**
    * Enhanced undo with marks and lines restoration
-   * @returns {Promise<boolean>} - True if successful
    */
-  async undo() {
+  async undo(): Promise<boolean> {
     // Handle undo during active transaction as rollback
     if (this.activeTransaction) {
       return await this.rollbackUndoTransaction();
@@ -493,7 +557,7 @@ class BufferUndoSystem {
       return false;
     }
     
-    const group = this.undoStack.pop();
+    const group = this.undoStack.pop()!;
     
     this.isUndoing = true;
     try {
@@ -521,24 +585,23 @@ class BufferUndoSystem {
 
   /**
    * Enhanced redo with marks and lines restoration
-   * @returns {Promise<boolean>} - True if successful
    */
-  async redo() {
+  async redo(): Promise<boolean> {
     if (this.redoStack.length === 0) {
       return false;
     }
     
-    const group = this.redoStack.pop();
+    const group = this.redoStack.pop()!;
     
     this.isUndoing = true;
     try {
       // CRITICAL FIX: Capture current marks state BEFORE redo operations
-      let currentMarksSnapshot = null;
+      let currentMarksSnapshot: MarkTuple[] | null = null;
       if (this.buffer.lineAndMarksManager) {
         try {
           currentMarksSnapshot = this.buffer.lineAndMarksManager.getAllMarks();
         } catch (error) {
-          logger.warn('Failed to capture current marks state for redo:', error.message);
+          logger.warn('Failed to capture current marks state for redo:', (error as Error).message);
         }
       }
       
@@ -565,10 +628,8 @@ class BufferUndoSystem {
 
   /**
    * CORRECTED: Restore marks state from snapshot using virtual addresses
-   * @param {Array} marksSnapshot - Marks to restore (virtual address format)
-   * @private
    */
-  async _restoreMarksState(marksSnapshot) {
+  private async _restoreMarksState(marksSnapshot: MarkTuple[]): Promise<void> {
     if (!this.buffer.lineAndMarksManager) {
       return;
     }
@@ -600,16 +661,14 @@ class BufferUndoSystem {
       logger.debug('[DEBUG] Marks after restoration:', restoredMarks);
       
     } catch (error) {
-      logger.warn('Failed to restore marks state:', error.message);
+      logger.warn('Failed to restore marks state:', (error as Error).message);
     }
   }
 
   /**
    * Undo a single operation using Virtual Page Manager with enhanced tracking
-   * @param {BufferOperation} operation - Operation to undo
-   * @private
    */
-  async _undoOperationVPM(operation) {
+  private async _undoOperationVPM(operation: BufferOperation): Promise<void> {
     const vpm = this.buffer.virtualPageManager;
     
     switch (operation.type) {
@@ -617,49 +676,49 @@ class BufferUndoSystem {
         // Undo insert by deleting the inserted data
         await vpm.deleteRange(
           operation.preExecutionPosition,
-          operation.preExecutionPosition + operation.data.length
+          operation.preExecutionPosition + operation.data!.length
         );
         // FORCE mark update for undo
         if (this.buffer.lineAndMarksManager) {
           this.buffer.lineAndMarksManager.updateMarksAfterModification(
             operation.preExecutionPosition,
-            operation.data.length,
+            operation.data!.length,
             0
           );
         }
-        this.buffer.totalSize -= operation.data.length;
+        this.buffer.totalSize -= operation.data!.length;
         break;
         
       case OperationType.DELETE:
         // Undo delete by inserting the original data back
-        await vpm.insertAt(operation.preExecutionPosition, operation.originalData);
+        await vpm.insertAt(operation.preExecutionPosition, operation.originalData!);
         // FORCE mark update for undo
         if (this.buffer.lineAndMarksManager) {
           this.buffer.lineAndMarksManager.updateMarksAfterModification(
             operation.preExecutionPosition,
             0,
-            operation.originalData.length
+            operation.originalData!.length
           );
         }
-        this.buffer.totalSize += operation.originalData.length;
+        this.buffer.totalSize += operation.originalData!.length;
         break;
         
       case OperationType.OVERWRITE:
         // Undo overwrite by deleting new data and inserting original data
         await vpm.deleteRange(
           operation.preExecutionPosition,
-          operation.preExecutionPosition + operation.data.length
+          operation.preExecutionPosition + operation.data!.length
         );
-        await vpm.insertAt(operation.preExecutionPosition, operation.originalData);
+        await vpm.insertAt(operation.preExecutionPosition, operation.originalData!);
         // FORCE mark update for undo (net change)
         if (this.buffer.lineAndMarksManager) {
           this.buffer.lineAndMarksManager.updateMarksAfterModification(
             operation.preExecutionPosition,
-            operation.data.length,
-            operation.originalData.length
+            operation.data!.length,
+            operation.originalData!.length
           );
         }
-        const sizeChange = operation.originalData.length - operation.data.length;
+        const sizeChange = operation.originalData!.length - operation.data!.length;
         this.buffer.totalSize += sizeChange;
         break;
         
@@ -667,60 +726,60 @@ class BufferUndoSystem {
         throw new Error(`Unknown operation type: ${operation.type}`);
     }
     
-    this.buffer._markAsModified();
+    this.buffer.markAsModified();
   }
 
-  async _redoOperationVPM(operation) {
+  private async _redoOperationVPM(operation: BufferOperation): Promise<void> {
     const vpm = this.buffer.virtualPageManager;
     
     switch (operation.type) {
       case OperationType.INSERT:
         // Redo insert
-        await vpm.insertAt(operation.preExecutionPosition, operation.data);
+        await vpm.insertAt(operation.preExecutionPosition, operation.data!);
         // FORCE mark update for redo
         if (this.buffer.lineAndMarksManager) {
           this.buffer.lineAndMarksManager.updateMarksAfterModification(
             operation.preExecutionPosition,
             0,
-            operation.data.length
+            operation.data!.length
           );
         }
-        this.buffer.totalSize += operation.data.length;
+        this.buffer.totalSize += operation.data!.length;
         break;
         
       case OperationType.DELETE:
         // Redo delete
         await vpm.deleteRange(
           operation.preExecutionPosition,
-          operation.preExecutionPosition + operation.originalData.length
+          operation.preExecutionPosition + operation.originalData!.length
         );
         // FORCE mark update for redo
         if (this.buffer.lineAndMarksManager) {
           this.buffer.lineAndMarksManager.updateMarksAfterModification(
             operation.preExecutionPosition,
-            operation.originalData.length,
+            operation.originalData!.length,
             0
           );
         }
-        this.buffer.totalSize -= operation.originalData.length;
+        this.buffer.totalSize -= operation.originalData!.length;
         break;
         
       case OperationType.OVERWRITE:
         // Redo overwrite by deleting original data and inserting new data
         await vpm.deleteRange(
           operation.preExecutionPosition,
-          operation.preExecutionPosition + operation.originalData.length
+          operation.preExecutionPosition + operation.originalData!.length
         );
-        await vpm.insertAt(operation.preExecutionPosition, operation.data);
+        await vpm.insertAt(operation.preExecutionPosition, operation.data!);
         // FORCE mark update for redo (net change)
         if (this.buffer.lineAndMarksManager) {
           this.buffer.lineAndMarksManager.updateMarksAfterModification(
             operation.preExecutionPosition,
-            operation.originalData.length,
-            operation.data.length
+            operation.originalData!.length,
+            operation.data!.length
           );
         }
-        const sizeChange = operation.data.length - operation.originalData.length;
+        const sizeChange = operation.data!.length - operation.originalData!.length;
         this.buffer.totalSize += sizeChange;
         break;
         
@@ -728,16 +787,15 @@ class BufferUndoSystem {
         throw new Error(`Unknown operation type: ${operation.type}`);
     }
     
-    this.buffer._markAsModified();
+    this.buffer.markAsModified();
   }
 
   // =================== STATE QUERIES ===================
 
   /**
    * Check if undo is available
-   * @returns {boolean} - True if undo is available
    */
-  canUndo() {
+  canUndo(): boolean {
     // During active transaction, undo should be available for rollback
     if (this.activeTransaction) {
       return true;
@@ -747,9 +805,8 @@ class BufferUndoSystem {
 
   /**
    * Check if redo is available
-   * @returns {boolean} - True if redo is available
    */
-  canRedo() {
+  canRedo(): boolean {
     // Block redo during active transactions
     if (this.activeTransaction) {
       return false;
@@ -759,9 +816,8 @@ class BufferUndoSystem {
 
   /**
    * Get enhanced undo/redo statistics
-   * @returns {Object} - Statistics
    */
-  getStats() {
+  getStats(): UndoStats {
     let totalUndoOperations = 0;
     let totalRedoOperations = 0;
     let memoryUsage = 0;
@@ -803,7 +859,7 @@ class BufferUndoSystem {
   /**
    * Clear all undo/redo history
    */
-  clear() {
+  clear(): void {
     this.undoStack = [];
     this.redoStack = [];
     this.activeTransaction = null;
@@ -812,9 +868,8 @@ class BufferUndoSystem {
 
   /**
    * Get enhanced debug information
-   * @returns {Object} - Debug info
    */
-  getDebugInfo() {
+  getDebugInfo(): UndoDebugInfo {
     return {
       undoStack: this.undoStack.map(group => ({
         id: group.id,
@@ -846,10 +901,14 @@ class BufferUndoSystem {
   }
 }
 
-module.exports = {
+export {
   BufferUndoSystem,
   OperationGroup,
   OperationTransaction,
-  BufferOperation,
-  OperationType
+  type UndoConfig,
+  type TransactionOptions,
+  type TransactionInfo,
+  type UndoStats,
+  type UndoDebugInfo,
+  type BufferInterface
 };

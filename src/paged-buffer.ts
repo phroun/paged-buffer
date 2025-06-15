@@ -5,40 +5,180 @@
  * @version 2.3.0 - Page coordinate marks system
  */
 
-const fs = require('fs').promises;
-const crypto = require('crypto');
-const path = require('path');
-const { BufferUndoSystem } = require('./undo-system');
-const os = require('os');    
-const logger = require('./utils/logger');
+import { promises as fs } from 'fs';
+import * as crypto from 'crypto';
+import * as path from 'path';
+import * as os from 'os';
+import { logger } from './utils/logger';
+import { BufferUndoSystem } from './undo-system';
+import { MemoryPageStorage } from './storage/memory-page-storage';
+import { VirtualPageManager } from './virtual-page-manager';
+import { LineAndMarksManager, ExtractedContent } from './utils/line-marks-manager';
 
-const { 
-  BufferState, 
-  FileChangeStrategy 
-} = require('./types/buffer-types');
+import {
+  type IBuffer,
+  type MarkInfo,
+  type LineCharPosition
+} from './types/common';
 
-const { NotificationType, BufferNotification } = require('./types/notifications');
-const { MemoryPageStorage } = require('./storage/memory-page-storage');
-const { VirtualPageManager } = require('./virtual-page-manager');
-const { LineAndMarksManager, ExtractedContent } = require('./utils/line-marks-manager');
+// Import buffer-specific types (these would need to be created)
+enum BufferState {
+  CLEAN = 'clean',
+  DETACHED = 'detached',
+  CORRUPTED = 'corrupted'
+}
+
+enum FileChangeStrategy {
+  REBASE = 'rebase',
+  WARN = 'warn',
+  DETACH = 'detach'
+}
+
+enum NotificationType {
+  BUFFER_DETACHED = 'buffer_detached',
+  FILE_MODIFIED_ON_DISK = 'file_modified_on_disk',
+  PAGE_SPLIT = 'page_split',
+  PAGE_MERGED = 'page_merged',
+  STORAGE_ERROR = 'storage_error'
+}
+
+interface BufferNotification {
+  type: string;
+  severity: string;
+  message: string;
+  metadata: any;
+  timestamp: Date;
+}
+
+class BufferNotificationImpl implements BufferNotification {
+  public timestamp: Date;
+
+  constructor(
+    public type: string,
+    public severity: string,
+    public message: string,
+    public metadata: any = {}
+  ) {
+    this.timestamp = new Date();
+  }
+}
+
+interface ChangeStrategy {
+  noEdits: FileChangeStrategy;
+  withEdits: FileChangeStrategy;
+  sizeChanged: FileChangeStrategy;
+}
+
+interface Storage {
+  savePage(pageKey: string, data: Buffer): Promise<void>;
+  loadPage(pageKey: string): Promise<Buffer>;
+  deletePage(pageKey: string): Promise<void>;
+}
+
+interface SaveOptions {
+  forcePartialSave?: boolean;
+  allowDetached?: boolean;
+  isAtomicSave?: boolean;
+}
+
+interface UndoConfig {
+  maxUndoLevels?: number;
+  [key: string]: any;
+}
+
+interface UndoTransactionOptions {
+  [key: string]: any;
+}
+
+interface LineOperationResult {
+  lineNumber: number;
+  byteStart: number;
+  byteEnd: number;
+  length: number;
+  marks: Array<[string, number]>;
+  isExact: boolean;
+}
+
+interface FileChangeInfo {
+  changed: boolean;
+  sizeChanged?: boolean;
+  mtimeChanged?: boolean;
+  newSize?: number;
+  newMtime?: Date;
+  deleted?: boolean;
+}
+
+interface BufferStatus {
+  state: BufferState;
+  hasUnsavedChanges: boolean;
+  canSaveToOriginal: boolean;
+  isDetached: boolean;
+  isCorrupted: boolean;
+  missingDataRanges: number;
+  totalSize: number;
+  filename: string | null;
+}
+
+interface DetachmentInfo {
+  isDetached: boolean;
+  reason: string | null;
+  missingRanges: number;
+  totalMissingBytes: number;
+  ranges: Array<{
+    virtualStart: number;
+    virtualEnd: number;
+    size: number;
+    reason: string;
+  }>;
+}
+
+interface MemoryStats {
+  totalPages: number;
+  loadedPages: number;
+  dirtyPages: number;
+  detachedPages: number;
+  memoryUsed: number;
+  maxMemoryPages: number;
+  totalLines: number;
+  globalMarksCount: number;
+  pageIndexSize: number;
+  linesMemory: number;
+  marksMemory: number;
+  lineStartsCacheValid: boolean;
+  state: BufferState;
+  hasUnsavedChanges: boolean;
+  virtualSize: number;
+  sourceSize: number;
+  undo: {
+    undoGroups: number;
+    redoGroups: number;
+    totalUndoOperations: number;
+    totalRedoOperations: number;
+    currentGroupOperations: number;
+    memoryUsage: number;
+  };
+}
 
 /**
  * Tracks missing data ranges in detached buffers
  */
 class MissingDataRange {
-  constructor(virtualStart, virtualEnd, originalFileStart = null, originalFileEnd = null, reason = 'unknown') {
-    this.virtualStart = virtualStart;
-    this.virtualEnd = virtualEnd;
-    this.originalFileStart = originalFileStart;
-    this.originalFileEnd = originalFileEnd;
-    this.reason = reason; // 'file_deleted', 'file_corrupted', 'storage_failed', etc.
+  public size: number;
+
+  constructor(
+    public virtualStart: number,
+    public virtualEnd: number,
+    public originalFileStart: number | null = null,
+    public originalFileEnd: number | null = null,
+    public reason: string = 'unknown'
+  ) {
     this.size = virtualEnd - virtualStart;
   }
 
   /**
    * Generate human-readable description of missing data
    */
-  toDescription() {
+  toDescription(): string {
     const sizeDesc = this.size === 1 ? '1 byte' : `${this.size.toLocaleString()} bytes`;
     let desc = `[Missing ${sizeDesc} from buffer addresses ${this.virtualStart.toLocaleString()} to ${this.virtualEnd.toLocaleString()}`;
     
@@ -60,42 +200,61 @@ class MissingDataRange {
 /**
  * Enhanced PagedBuffer with page coordinate-based marks
  */
-class PagedBuffer {
-  constructor(pageSize = 64 * 1024, storage = null, maxMemoryPages = 100) {
+class PagedBuffer implements IBuffer {
+  public pageSize: number;
+  public storage: Storage;
+  public maxMemoryPages: number;
+  
+  // File metadata
+  public filename: string | null = null;
+  public fileSize: number = 0;
+  public fileMtime: Date | null = null;
+  public fileChecksum: string | null = null;
+  
+  // Virtual Page Manager
+  public virtualPageManager: VirtualPageManager;
+  
+  // Enhanced Line and Marks Manager with page coordinates
+  public lineAndMarksManager: LineAndMarksManager;
+  
+  // Virtual file state
+  public totalSize: number = 0;
+  
+  // REFACTORED STATE MANAGEMENT:
+  // Data integrity state (clean/detached/corrupted)
+  public state: BufferState = BufferState.CLEAN;
+  // Modification state (separate from integrity)
+  public hasUnsavedChanges: boolean = false;
+  
+  // Detached buffer tracking
+  public missingDataRanges: MissingDataRange[] = [];
+  public detachmentReason: string | null = null;
+  
+  // Notification system
+  public notifications: BufferNotification[] = [];
+  public notificationCallbacks: Array<(notification: BufferNotification) => void> = [];
+  
+  // File change detection settings
+  public changeStrategy: ChangeStrategy;
+  
+  // Monitoring
+  public lastFileCheck: number | null = null;
+  public fileCheckInterval: number = 5000;
+  
+  // Undo/Redo system
+  public undoSystem: BufferUndoSystem | null = null;
+
+  constructor(pageSize: number = 64 * 1024, storage: Storage | null = null, maxMemoryPages: number = 100) {
     this.pageSize = pageSize;
     this.storage = storage || new MemoryPageStorage();
     this.maxMemoryPages = maxMemoryPages;
     
-    // File metadata
-    this.filename = null;
-    this.fileSize = 0;
-    this.fileMtime = null;
-    this.fileChecksum = null;
-    
     // Virtual Page Manager
-    this.virtualPageManager = new VirtualPageManager(this, pageSize);
-    this.virtualPageManager.maxLoadedPages = maxMemoryPages;
+    this.virtualPageManager = new VirtualPageManager(this, pageSize, maxMemoryPages);
     
     // Enhanced Line and Marks Manager with page coordinates
     this.lineAndMarksManager = new LineAndMarksManager(this.virtualPageManager);
     this.virtualPageManager.setLineAndMarksManager(this.lineAndMarksManager);
-    
-    // Virtual file state
-    this.totalSize = 0;
-    
-    // REFACTORED STATE MANAGEMENT:
-    // Data integrity state (clean/detached/corrupted)
-    this.state = BufferState.CLEAN;
-    // Modification state (separate from integrity)
-    this.hasUnsavedChanges = false;
-    
-    // Detached buffer tracking
-    this.missingDataRanges = [];
-    this.detachmentReason = null;
-    
-    // Notification system
-    this.notifications = [];
-    this.notificationCallbacks = [];
     
     // File change detection settings
     this.changeStrategy = {
@@ -103,21 +262,12 @@ class PagedBuffer {
       withEdits: FileChangeStrategy.WARN,
       sizeChanged: FileChangeStrategy.DETACH
     };
-    
-    // Monitoring
-    this.lastFileCheck = null;
-    this.fileCheckInterval = 5000;
-    
-    // Undo/Redo system
-    this.undoSystem = null;
   }
 
   /**
    * Mark buffer as detached due to data loss
-   * @param {string} reason - Reason for detachment
-   * @param {MissingDataRange[]} missingRanges - Missing data ranges
    */
-  _markAsDetached(reason, missingRanges = []) {
+  _markAsDetached(reason: string, missingRanges: MissingDataRange[] = []): void {
     const wasDetached = this.state === BufferState.DETACHED;
     
     // CRITICAL: Always transition to DETACHED when corruption is detected
@@ -145,25 +295,22 @@ class PagedBuffer {
 
   /**
    * Mark buffer as having unsaved changes
-   * @private
    */
-  _markAsModified() {
+  public markAsModified(): void {
     this.hasUnsavedChanges = true;
   }
 
   /**
    * Mark buffer as saved (no unsaved changes)
-   * @private
    */
-  _markAsSaved() {
+  private _markAsSaved(): void {
     this.hasUnsavedChanges = false;
   }
 
   /**
    * Merge overlapping missing data ranges
-   * @private
    */
-  _mergeMissingRanges() {
+  private _mergeMissingRanges(): void {
     if (this.missingDataRanges.length <= 1) return;
     
     // Sort by virtual start position
@@ -192,21 +339,16 @@ class PagedBuffer {
 
   /**
    * Add notification callback
-   * @param {Function} callback - Callback function for notifications
    */
-  onNotification(callback) {
+  onNotification(callback: (notification: BufferNotification) => void): void {
     this.notificationCallbacks.push(callback);
   }
 
   /**
    * Emit a notification
-   * @param {string} type - Notification type
-   * @param {string} severity - Severity level
-   * @param {string} message - Human-readable message
-   * @param {Object} metadata - Additional data
    */
-  _notify(type, severity, message, metadata = {}) {
-    const notification = new BufferNotification(type, severity, message, metadata);
+  _notify(type: string, severity: string, message: string, metadata: any = {}): void {
+    const notification = new BufferNotificationImpl(type, severity, message, metadata);
     this.notifications.push(notification);
     
     for (const callback of this.notificationCallbacks) {
@@ -220,9 +362,8 @@ class PagedBuffer {
 
   /**
    * Load a file into the buffer
-   * @param {string} filename - Path to the file
    */
-  async loadFile(filename) {
+  async loadFile(filename: string): Promise<void> {
     try {
       const stats = await fs.stat(filename);
       this.filename = filename;
@@ -251,14 +392,14 @@ class PagedBuffer {
       );
       
     } catch (error) {
-      throw new Error(`Failed to load file: ${error.message}`);
+      throw new Error(`Failed to load file: ${(error as Error).message}`);
     }
   }
 
   /**
    * Enhanced loadContent with proper initial state
    */
-  loadContent(content) {
+  loadContent(content: string): void {
     this.filename = null;
     this.totalSize = Buffer.byteLength(content, 'utf8');
     
@@ -283,7 +424,7 @@ class PagedBuffer {
   /**
    * Enhanced loadBinaryContent with proper initial state
    */
-  loadBinaryContent(content) {
+  loadBinaryContent(content: Buffer): void {
     this.filename = null;
     this.totalSize = content.length;
     
@@ -306,10 +447,8 @@ class PagedBuffer {
 
   /**
    * Calculate file checksum for change detection
-   * @param {string} filename - File to checksum
-   * @returns {Promise<string>} - File checksum
    */
-  async _calculateFileChecksum(filename) {
+  private async _calculateFileChecksum(filename: string): Promise<string> {
     if (this.fileSize === 0) {
       return 'd41d8cd98f00b204e9800998ecf8427e'; // MD5 of empty string
     }
@@ -335,9 +474,8 @@ class PagedBuffer {
 
   /**
    * Check for file changes
-   * @returns {Promise<Object>} - Change information
    */
-  async checkFileChanges() {
+  async checkFileChanges(): Promise<FileChangeInfo> {
     if (!this.filename) {
       return { changed: false };
     }
@@ -345,7 +483,7 @@ class PagedBuffer {
     try {
       const stats = await fs.stat(this.filename);
       const sizeChanged = stats.size !== this.fileSize;
-      const mtimeChanged = stats.mtime.getTime() !== this.fileMtime.getTime();
+      const mtimeChanged = stats.mtime.getTime() !== this.fileMtime!.getTime();
       const changed = sizeChanged || mtimeChanged;
 
       return {
@@ -357,7 +495,7 @@ class PagedBuffer {
         deleted: false
       };
     } catch (error) {
-      if (error.code === 'ENOENT') {
+      if ((error as any).code === 'ENOENT') {
         return {
           changed: true,
           deleted: true,
@@ -373,12 +511,8 @@ class PagedBuffer {
 
   /**
    * Get bytes from absolute position with optional marks extraction
-   * @param {number} start - Start byte position
-   * @param {number} end - End byte position
-   * @param {boolean} includeMarks - Whether to include marks in result
-   * @returns {Promise<Buffer|ExtractedContent>} - Data or data with marks
    */
-  async getBytes(start, end, includeMarks = false) {
+  async getBytes(start: number, end: number, includeMarks: boolean = false): Promise<Buffer | ExtractedContent> {
     if (start < 0 || end < 0) {
       throw new Error('Invalid range: positions cannot be negative');
     }
@@ -408,11 +542,8 @@ class PagedBuffer {
 
   /**
    * Insert bytes at absolute position with optional marks
-   * @param {number} position - Insertion position
-   * @param {Buffer} data - Data to insert
-   * @param {Array<{name: string, relativeOffset: number}>} marks - Marks to insert
    */
-  async insertBytes(position, data, marks = []) {
+  async insertBytes(position: number, data: Buffer, marks: MarkInfo[] = []): Promise<void> {
     if (position < 0) {
       throw new Error('Invalid position: cannot be negative');
     }
@@ -432,12 +563,15 @@ class PagedBuffer {
 
     logger.debug('[DEBUG] Pre-op marks:', preOpMarksSnapshot);
 
+    // Convert MarkInfo to RelativeMarkTuple for the lineAndMarksManager
+    const relativeMarks = marks.map(mark => [mark.name, mark.relativeOffset] as [string, number]);
+
     // Always use enhanced method (handles both VPM and mark updates)
-    await this.lineAndMarksManager.insertBytesWithMarks(position, data, marks);
+    await this.lineAndMarksManager.insertBytesWithMarks(position, data, relativeMarks);
     
     // Update buffer state
     this.totalSize += data.length;
-    this._markAsModified();
+    this.markAsModified();
     
     logger.debug('[DEBUG] Post-op marks:', this.lineAndMarksManager.getAllMarks());
     
@@ -449,12 +583,8 @@ class PagedBuffer {
 
   /**
    * Enhanced deleteBytes with marks reporting
-   * @param {number} start - Start position
-   * @param {number} end - End position
-   * @param {boolean} reportMarks - Whether to report marks that were in deleted content
-   * @returns {Promise<Buffer|ExtractedContent>} - Deleted data with optional marks report
    */
-  async deleteBytes(start, end, reportMarks = false) {
+  async deleteBytes(start: number, end: number, reportMarks: boolean = false): Promise<Buffer | ExtractedContent> {
     if (start < 0 || end < 0) {
       throw new Error('Invalid range: positions cannot be negative');  
     }
@@ -484,7 +614,7 @@ class PagedBuffer {
     
     // Update buffer state
     this.totalSize -= result.data.length;
-    this._markAsModified();
+    this.markAsModified();
     
     logger.debug('[DEBUG] Post-delete marks:', this.lineAndMarksManager.getAllMarks());
     
@@ -503,12 +633,8 @@ class PagedBuffer {
 
   /**
    * Enhanced overwriteBytes with marks support
-   * @param {number} position - Overwrite position
-   * @param {Buffer} data - New data
-   * @param {Array<{name: string, relativeOffset: number}>} marks - Marks to insert
-   * @returns {Promise<Buffer|ExtractedContent>} - Overwritten data with optional marks
    */
-  async overwriteBytes(position, data, marks = []) {
+  async overwriteBytes(position: number, data: Buffer, marks: MarkInfo[] = []): Promise<Buffer | ExtractedContent> {
     if (position < 0) {
       throw new Error('Invalid position: cannot be negative');
     }
@@ -528,16 +654,19 @@ class PagedBuffer {
 
     // Calculate overwrite range for undo recording
     const overwriteEnd = Math.min(position + data.length, this.totalSize);
-    const overwrittenDataForUndo = await this.getBytes(position, overwriteEnd);
+    const overwrittenDataForUndo = await this.getBytes(position, overwriteEnd) as Buffer;
+
+    // Convert MarkInfo to RelativeMarkTuple for the lineAndMarksManager
+    const relativeMarks = marks.map(mark => [mark.name, mark.relativeOffset] as [string, number]);
 
     // Always use enhanced method (handles both VPM and mark updates)
-    const result = await this.lineAndMarksManager.overwriteBytesWithMarks(position, data, marks);
+    const result = await this.lineAndMarksManager.overwriteBytesWithMarks(position, data, relativeMarks);
     
     // Update buffer state
     const originalSize = overwriteEnd - position;
     const netSizeChange = data.length - originalSize;
     this.totalSize += netSizeChange;
-    this._markAsModified();
+    this.markAsModified();
     
     // Record the operation AFTER executing it, with pre-operation snapshot
     if (this.undoSystem) {
@@ -553,65 +682,53 @@ class PagedBuffer {
   }
 
   // =================== NAMED MARKS API ===================
-  // (All methods remain unchanged - they delegate to lineAndMarksManager)
 
   /**
    * Set a named mark at a byte address
-   * @param {string} markName - Name of the mark
-   * @param {number} byteAddress - Byte address in buffer
    */
-  setMark(markName, byteAddress) {
+  setMark(markName: string, byteAddress: number): void {
     this.lineAndMarksManager.setMark(markName, byteAddress);
   }
 
   /**
    * Get the byte address of a named mark
-   * @param {string} markName - Name of the mark
-   * @returns {number|null} - Byte address or null if not found
    */
-  getMark(markName) {
+  getMark(markName: string): number | null {
     return this.lineAndMarksManager.getMark(markName);
   }
 
   /**
    * Remove a named mark
-   * @param {string} markName - Name of the mark
-   * @returns {boolean} - True if mark was found and removed
    */
-  removeMark(markName) {
+  removeMark(markName: string): boolean {
     return this.lineAndMarksManager.removeMark(markName);
   }
 
   /**
    * Get all marks between two byte addresses
-   * @param {number} startAddress - Start address (inclusive)
-   * @param {number} endAddress - End address (inclusive)
-   * @returns {Array<{name: string, address: number}>} - Marks in range
    */
-  getMarksInRange(startAddress, endAddress) {
+  getMarksInRange(startAddress: number, endAddress: number): Array<[string, number]> {
     return this.lineAndMarksManager.getMarksInRange(startAddress, endAddress);
   }
 
   /**
    * Get all marks in the buffer
-   * @returns {Array<{name: string, address: number}>} - All marks
    */
-  getAllMarks() {
+  getAllMarks(): Record<string, number> {
     return this.lineAndMarksManager.getAllMarksForPersistence();
   }
 
   /**
    * Set marks from a key-value object (for persistence)
-   * @param {Object} marksObject - Object mapping mark names to virtual addresses
    */
-  setMarks(marksObject) {
+  setMarks(marksObject: Record<string, number>): void {
     this.lineAndMarksManager.setMarksFromPersistence(marksObject);
   }
 
   /**
    * Clear all marks
    */
-  clearAllMarks() {
+  clearAllMarks(): void {
     this.lineAndMarksManager.clearAllMarks();
   }
 
@@ -619,9 +736,8 @@ class PagedBuffer {
 
   /**
    * Enable undo/redo functionality
-   * @param {Object} config - Undo system configuration  
    */
-  enableUndo(config = {}) {
+  enableUndo(config: UndoConfig = {}): void {
     if (!this.undoSystem) {
       this.undoSystem = new BufferUndoSystem(this, config.maxUndoLevels);
       if (config) {
@@ -633,7 +749,7 @@ class PagedBuffer {
   /**
    * Disable undo/redo functionality
    */
-  disableUndo() {
+  disableUndo(): void {
     if (this.undoSystem) {
       this.undoSystem.clear();
       this.undoSystem = null;
@@ -642,10 +758,8 @@ class PagedBuffer {
 
   /**
    * Begin a named undo transaction
-   * @param {string} name - Name/description of the transaction
-   * @param {Object} options - Transaction options  
    */
-  beginUndoTransaction(name, options = {}) {
+  beginUndoTransaction(name: string, options: UndoTransactionOptions = {}): void {
     if (this.undoSystem) {
       this.undoSystem.beginUndoTransaction(name, options);
     }
@@ -653,10 +767,8 @@ class PagedBuffer {
 
   /**
    * Commit the current undo transaction
-   * @param {string} finalName - Optional final name
-   * @returns {boolean} - True if transaction was committed
    */
-  commitUndoTransaction(finalName = null) {
+  commitUndoTransaction(finalName: string | null = null): boolean {
     if (this.undoSystem) {
       return this.undoSystem.commitUndoTransaction(finalName);
     }
@@ -665,9 +777,8 @@ class PagedBuffer {
 
   /**
    * Rollback the current undo transaction
-   * @returns {Promise<boolean>} - True if transaction was rolled back
    */
-  async rollbackUndoTransaction() {
+  async rollbackUndoTransaction(): Promise<boolean> {
     if (this.undoSystem) {
       return await this.undoSystem.rollbackUndoTransaction();
     }
@@ -676,25 +787,22 @@ class PagedBuffer {
 
   /**
    * Check if currently in an undo transaction
-   * @returns {boolean} - True if in transaction
    */
-  inUndoTransaction() {
+  inUndoTransaction(): boolean {
     return this.undoSystem ? this.undoSystem.inTransaction() : false;
   }
 
   /**
    * Get current undo transaction info
-   * @returns {Object|null} - Transaction info or null
    */
-  getCurrentUndoTransaction() {
+  getCurrentUndoTransaction(): any {
     return this.undoSystem ? this.undoSystem.getCurrentTransaction() : null;
   }
 
   /**
    * Undo the last operation
-   * @returns {Promise<boolean>} - True if successful
    */
-  async undo() {
+  async undo(): Promise<boolean> {
     if (!this.undoSystem) {
       return false;
     }
@@ -703,9 +811,8 @@ class PagedBuffer {
 
   /**
    * Redo the last undone operation
-   * @returns {Promise<boolean>} - True if successful
    */
-  async redo() {
+  async redo(): Promise<boolean> {
     if (!this.undoSystem) {
       return false;
     }
@@ -714,17 +821,15 @@ class PagedBuffer {
 
   /**
    * Check if undo is available
-   * @returns {boolean} - True if undo is available
    */
-  canUndo() {
+  canUndo(): boolean {
     return this.undoSystem ? this.undoSystem.canUndo() : false;
   }
 
   /**
    * Check if redo is available
-   * @returns {boolean} - True if redo is available
    */
-  canRedo() {
+  canRedo(): boolean {
     return this.undoSystem ? this.undoSystem.canRedo() : false;
   }
 
@@ -732,17 +837,15 @@ class PagedBuffer {
 
   /**
    * Get total size of buffer
-   * @returns {number} - Total size
    */
-  getTotalSize() {
+  getTotalSize(): number {
     return this.virtualPageManager.getTotalSize();
   }
 
   /**
    * Get buffer state (data integrity)
-   * @returns {string} - Buffer state
    */
-  getState() {
+  getState(): BufferState {
     // Validate state consistency
     if (this.state === BufferState.DETACHED && this.missingDataRanges.length === 0) {
       logger.warn('Buffer marked as DETACHED but has no missing data ranges');
@@ -753,25 +856,22 @@ class PagedBuffer {
 
   /**
    * Check if buffer has unsaved changes
-   * @returns {boolean} - True if there are unsaved changes
    */
-  hasChanges() {
+  hasChanges(): boolean {
     return this.hasUnsavedChanges;
   }
 
   /**
    * Check if buffer can be saved to its original location
-   * @returns {boolean} - True if safe to save to original location
    */
-  canSaveToOriginal() {
+  canSaveToOriginal(): boolean {
     return this.state !== BufferState.DETACHED;
   }
 
   /**
    * Get comprehensive buffer status
-   * @returns {Object} - Complete status information
    */
-  getStatus() {
+  getStatus(): BufferStatus {
     return {
       state: this.state,
       hasUnsavedChanges: this.hasUnsavedChanges,
@@ -786,9 +886,8 @@ class PagedBuffer {
 
   /**
    * Get enhanced memory usage stats with line and marks information
-   * @returns {Object} - Memory statistics
    */
-  getMemoryStats() {
+  getMemoryStats(): MemoryStats {
     const vpmStats = this.virtualPageManager.getMemoryStats();
     const lmStats = this.lineAndMarksManager.getMemoryStats();
     
@@ -831,9 +930,8 @@ class PagedBuffer {
 
   /**
    * Get detachment information
-   * @returns {Object} Detachment details
    */
-  getDetachmentInfo() {
+  getDetachmentInfo(): DetachmentInfo {
     return {
       isDetached: this.state === BufferState.DETACHED,
       reason: this.detachmentReason,
@@ -850,17 +948,15 @@ class PagedBuffer {
 
   /**
    * Get all notifications
-   * @returns {Array} - Array of notifications
    */
-  getNotifications() {
+  getNotifications(): BufferNotification[] {
     return [...this.notifications];
   }
 
   /**
    * Clear notifications
-   * @param {string} [type] - Optional type filter
    */
-  clearNotifications(type = null) {
+  clearNotifications(type: string | null = null): void {
     if (type) {
       this.notifications = this.notifications.filter(n => n.type !== type);
     } else {
@@ -870,9 +966,8 @@ class PagedBuffer {
 
   /**
    * Set file change handling strategy
-   * @param {Object} strategies - Strategy configuration
    */
-  setChangeStrategy(strategies) {
+  setChangeStrategy(strategies: Partial<ChangeStrategy>): void {
     this.changeStrategy = { ...this.changeStrategy, ...strategies };
   }
 
@@ -880,9 +975,8 @@ class PagedBuffer {
 
   /**
    * Generate missing data summary for save operations
-   * @private
    */
-  _generateMissingDataSummary() {
+  private _generateMissingDataSummary(): string {
     if (this.missingDataRanges.length === 0) {
       return '';
     }
@@ -905,9 +999,8 @@ class PagedBuffer {
 
   /**
    * Create marker for missing data at a specific position
-   * @private
    */
-  _createMissingDataMarker(missingRange) {
+  private _createMissingDataMarker(missingRange: MissingDataRange): string {
     const nl = '\n'; // Use newlines for readability
     
     let marker = `${nl}--- MISSING ${missingRange.size.toLocaleString()} BYTES `;
@@ -929,9 +1022,8 @@ class PagedBuffer {
 
   /**
    * Create marker for missing data at end of file
-   * @private
    */
-  _createEndOfFileMissingMarker(lastRange, totalSize) {
+  private _createEndOfFileMissingMarker(lastRange: MissingDataRange, totalSize: number): string {
     const nl = '\n';
     const missingAtEnd = lastRange.virtualEnd - totalSize;
     
@@ -958,9 +1050,8 @@ class PagedBuffer {
 
   /**
    * Create emergency marker for data that became unavailable during save
-   * @private
    */
-  _createEmergencyMissingMarker(startPos, endPos, reason) {
+  private _createEmergencyMissingMarker(startPos: number, endPos: number, reason: string): string {
     const nl = '\n';
     const size = endPos - startPos;
     
@@ -989,9 +1080,8 @@ class PagedBuffer {
 
   /**
    * Write data with markers indicating where missing data belongs - FIXED for large files
-   * @private
    */
-  async _writeDataWithMissingMarkers(fd) {
+  private async _writeDataWithMissingMarkers(fd: fs.FileHandle): Promise<void> {
     const totalSize = this.getTotalSize();
     if (totalSize === 0) return;
     
@@ -1051,13 +1141,8 @@ class PagedBuffer {
 
   /**
    * Write a segment of data in manageable chunks
-   * @param {fs.FileHandle} fd - File handle to write to
-   * @param {number} startPos - Start position in virtual buffer
-   * @param {number} endPos - End position in virtual buffer  
-   * @param {number} maxChunkSize - Maximum size per chunk
-   * @private
    */
-  async _writeSegmentInChunks(fd, startPos, endPos, maxChunkSize) {
+  private async _writeSegmentInChunks(fd: fs.FileHandle, startPos: number, endPos: number, maxChunkSize: number): Promise<void> {
     let chunkStart = startPos;
     
     while (chunkStart < endPos) {
@@ -1081,8 +1166,8 @@ class PagedBuffer {
         
       } catch (error) {
         // Data became unavailable during save - add an emergency marker
-        logger.warn(`Data unavailable for chunk ${chunkStart}-${chunkEnd}: ${error.message}`);
-        const emergencyMarker = this._createEmergencyMissingMarker(chunkStart, chunkEnd, error.message);
+        logger.warn(`Data unavailable for chunk ${chunkStart}-${chunkEnd}: ${(error as Error).message}`);
+        const emergencyMarker = this._createEmergencyMissingMarker(chunkStart, chunkEnd, (error as Error).message);
         await fd.write(Buffer.from(emergencyMarker));
       }
       
@@ -1098,7 +1183,7 @@ class PagedBuffer {
   /**
    * Enhanced save method with smart behavior and atomic operations
    */
-  async saveFile(filename = this.filename, options = {}) {
+  async saveFile(filename: string | null = this.filename, options: SaveOptions = {}): Promise<void> {
     if (!filename) {
       throw new Error('No filename specified');
     }
@@ -1139,12 +1224,12 @@ class PagedBuffer {
   /**
    * Enhanced saveAs that handles detached buffers gracefully
    */
-  async saveAs(filename, forcePartialOrOptions = {}, options = {}) {
+  async saveAs(filename: string, forcePartialOrOptions: boolean | SaveOptions = {}, options: SaveOptions = {}): Promise<void> {
     if (!filename) {
       throw new Error('Filename required for saveAs operation');
     }
 
-    let saveOptions = {};
+    let saveOptions: SaveOptions = {};
     
     if (typeof forcePartialOrOptions === 'boolean') {
       // Legacy boolean parameter - ignore it for saveAs
@@ -1159,9 +1244,8 @@ class PagedBuffer {
 
   /**
    * Enhanced save method with positional missing data markers
-   * @private
    */
-  async _performSave(filename, _options = {}) {
+  private async _performSave(filename: string, _options: SaveOptions = {}): Promise<void> {
     const fd = await fs.open(filename, 'w');
     
     try {
@@ -1208,8 +1292,8 @@ class PagedBuffer {
   /**
    * Atomic save that uses temporary copy to prevent corruption
    */
-  async _performAtomicSave(filename, options = {}) {
-    let tempCopyPath = null;
+  private async _performAtomicSave(filename: string, options: SaveOptions = {}): Promise<void> {
+    let tempCopyPath: string | null = null;
     
     try {
       // Step 1: Create temporary copy of original file (if it exists and we need it)
@@ -1252,7 +1336,7 @@ class PagedBuffer {
   /**
    * Create a temporary copy of the original file
    */
-  async _createTempCopy(originalPath) {
+  private async _createTempCopy(originalPath: string): Promise<string> {
     const tempDir = os.tmpdir();
     const baseName = path.basename(originalPath);
     const tempName = `paged-buffer-${Date.now()}-${Math.random().toString(36).substr(2, 9)}-${baseName}`;
@@ -1265,7 +1349,7 @@ class PagedBuffer {
   /**
    * Update VPM to use a different source file path
    */
-  _updateVPMSourceFile(newPath) {
+  private _updateVPMSourceFile(newPath: string): void {
     // Update all original-type page descriptors to use the new path
     for (const descriptor of this.virtualPageManager.addressIndex.getAllPages()) {
       if (descriptor.sourceType === 'original' && descriptor.sourceInfo.filename) {
@@ -1280,7 +1364,7 @@ class PagedBuffer {
   /**
    * Cleanup temporary copy
    */
-  async _cleanupTempCopy(tempPath) {
+  private async _cleanupTempCopy(tempPath: string): Promise<void> {
     try {
       await fs.unlink(tempPath);
       
@@ -1295,8 +1379,8 @@ class PagedBuffer {
       this._notify(
         'temp_cleanup_failed',
         'warning',
-        `Failed to cleanup temporary copy: ${error.message}`,
-        { tempPath, error: error.message }
+        `Failed to cleanup temporary copy: ${(error as Error).message}`,
+        { tempPath, error: (error as Error).message }
       );
     }
   }
@@ -1304,7 +1388,7 @@ class PagedBuffer {
   /**
    * Update metadata after successful save
    */
-  async _updateMetadataAfterSave(filename) {
+  private async _updateMetadataAfterSave(filename: string): Promise<void> {
     try {
       const stats = await fs.stat(filename);
       this.filename = filename;
@@ -1339,8 +1423,8 @@ class PagedBuffer {
       this._notify(
         'save_metadata_update_failed',
         'warning',
-        `Save succeeded but metadata update failed: ${error.message}`,
-        { filename, error: error.message }
+        `Save succeeded but metadata update failed: ${(error as Error).message}`,
+        { filename, error: (error as Error).message }
       );
     }
   }
@@ -1348,7 +1432,7 @@ class PagedBuffer {
   /**
    * Check if file exists
    */
-  async _fileExists(filePath) {
+  private async _fileExists(filePath: string): Promise<boolean> {
     try {
       await fs.access(filePath);
       return true;
@@ -1360,7 +1444,7 @@ class PagedBuffer {
   /**
    * Method to manually mark buffer as clean (for testing/special cases)
    */
-  _markAsClean() {
+  _markAsClean(): void {
     if (this.state !== BufferState.DETACHED) {
       this.state = BufferState.CLEAN;
     }
@@ -1371,21 +1455,21 @@ class PagedBuffer {
    * Method to check if buffer has been modified
    * @deprecated Use hasChanges() instead
    */
-  isModified() {
+  isModified(): boolean {
     return this.hasUnsavedChanges;
   }
 
   /**
    * Method to check if buffer is detached
    */
-  isDetached() {
+  isDetached(): boolean {
     return this.state === BufferState.DETACHED;
   }
 
   /**
    * Method to check if buffer is clean
    */
-  isClean() {
+  isClean(): boolean {
     return this.state === BufferState.CLEAN && !this.hasUnsavedChanges;
   }
 
@@ -1393,77 +1477,59 @@ class PagedBuffer {
 
   /**
    * Get total number of lines in the buffer (SYNCHRONOUS)
-   * @returns {number} - Total line count
    */
-  getLineCount() {
+  getLineCount(): number {
     return this.lineAndMarksManager.getTotalLineCount();
   }
 
   /**
    * Get information about a specific line (SYNCHRONOUS)
-   * @param {number} lineNumber - Line number (1-based)
-   * @returns {LineOperationResult|null} - Line info or null if not found
    */
-  getLineInfo(lineNumber) {
+  getLineInfo(lineNumber: number): LineOperationResult | null {
     return this.lineAndMarksManager.getLineInfo(lineNumber);
   }
 
   /**
    * Get information about multiple lines at once (SYNCHRONOUS)
-   * @param {number} startLine - Start line number (1-based, inclusive)
-   * @param {number} endLine - End line number (1-based, inclusive)
-   * @returns {LineOperationResult[]} - Array of line info
    */
-  getMultipleLines(startLine, endLine) {
+  getMultipleLines(startLine: number, endLine: number): LineOperationResult[] {
     return this.lineAndMarksManager.getMultipleLines(startLine, endLine);
   }
 
   /**
    * Convert byte address to line number (SYNCHRONOUS)
-   * @param {number} byteAddress - Byte address in buffer
-   * @returns {number} - Line number (1-based) or 0 if invalid
    */
-  getLineNumberFromAddress(byteAddress) {
+  getLineNumberFromAddress(byteAddress: number): number {
     return this.lineAndMarksManager.getLineNumberFromAddress(byteAddress);
   }
 
   /**
    * Convert line/character position to absolute byte position (SYNCHRONOUS)
-   * @param {Object} pos - {line, character} (both 1-based, character = byte offset in line)
-   * @returns {number} - Absolute byte position
    */
-  lineCharToBytePosition(pos) {
+  lineCharToBytePosition(pos: LineCharPosition): number {
     return this.lineAndMarksManager.lineCharToBytePosition(pos);
   }
 
   /**
    * Convert absolute byte position to line/character position (SYNCHRONOUS)
-   * @param {number} bytePos - Absolute byte position
-   * @returns {Object} - {line, character} (both 1-based, character = byte offset in line + 1)
    */
-  byteToLineCharPosition(bytePos) {
+  byteToLineCharPosition(bytePos: number): LineCharPosition {
     return this.lineAndMarksManager.byteToLineCharPosition(bytePos);
   }
 
   /**
    * Ensure page containing address is loaded (ASYNC)
-   * @param {number} address - Byte address to load
-   * @returns {Promise<boolean>} - True if page was loaded successfully
    */
-  async seekAddress(address) {
+  async seekAddress(address: number): Promise<boolean> {
     return await this.lineAndMarksManager.seekAddress(address);
   }
 
   // =================== CONVENIENCE LINE METHODS ===================
-  // (All methods remain unchanged)
 
   /**
    * Insert content with line/character position (convenience method)
-   * @param {Object} pos - {line, character} (both 1-based, character = byte offset)
-   * @param {string} text - Text to insert
-   * @returns {Promise<{newPosition: Object}>}
    */
-  async insertTextAtPosition(pos, text) {
+  async insertTextAtPosition(pos: LineCharPosition, text: string): Promise<{ newPosition: LineCharPosition }> {
     const bytePos = this.lineCharToBytePosition(pos);
     const textBuffer = Buffer.from(text, 'utf8');
     
@@ -1477,20 +1543,17 @@ class PagedBuffer {
 
   /**
    * Delete content between line/character positions (convenience method)
-   * @param {Object} startPos - {line, character} (both 1-based, character = byte offset)
-   * @param {Object} endPos - {line, character} (both 1-based, character = byte offset)
-   * @returns {Promise<{deletedText: string}>}
    */
-  async deleteTextBetweenPositions(startPos, endPos) {
+  async deleteTextBetweenPositions(startPos: LineCharPosition, endPos: LineCharPosition): Promise<{ deletedText: string }> {
     const startByte = this.lineCharToBytePosition(startPos);
     const endByte = this.lineCharToBytePosition(endPos);
     
-    const deletedBytes = await this.deleteBytes(startByte, endByte);
+    const deletedBytes = await this.deleteBytes(startByte, endByte) as Buffer;
     const deletedText = deletedBytes.toString('utf8');
     
     return { deletedText };
   }
 }
-  
+
 // Export the MissingDataRange class as well for testing
-module.exports = { PagedBuffer, MissingDataRange };
+export { PagedBuffer, MissingDataRange, BufferState, FileChangeStrategy, NotificationType };

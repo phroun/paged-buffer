@@ -5,7 +5,7 @@
  * comprehensive line tracking, named marks support, and pluggable storage backends.
  * 
  * @example
- * const { PagedBuffer } = require('paged-buffer-system');
+ * import { PagedBuffer } from 'paged-buffer-system';
  * 
  * const buffer = new PagedBuffer();
  * buffer.enableUndo();
@@ -34,29 +34,30 @@
  * @version 2.2.0
  */
 
-const { PagedBuffer } = require('./paged-buffer');
-const { BufferUndoSystem, BufferOperation, OperationGroup, OperationType } = require('./undo-system');
-const { PageStorage } = require('./storage/page-storage');
-const { FilePageStorage } = require('./storage/file-page-storage');
-const { MemoryPageStorage } = require('./storage/memory-page-storage');
-const { PageInfo, LineInfo, MarkInfo } = require('./utils/page-info');
-const { VirtualPageManager, PageDescriptor, PageAddressIndex } = require('./virtual-page-manager');
-const { LineAndMarksManager, LineOperationResult, ExtractedContent } = require('./utils/line-marks-manager');
-const { 
+import { PagedBuffer } from './paged-buffer';
+import { BufferUndoSystem, BufferOperation, OperationGroup, OperationType } from './undo-system';
+import { PageStorage } from './storage/page-storage';
+import { FilePageStorage } from './storage/file-page-storage';
+import { MemoryPageStorage } from './storage/memory-page-storage';
+import { PageInfo, LineInfo, MarkInfo } from './utils/page-info';
+import { VirtualPageManager, PageDescriptor, PageAddressIndex } from './virtual-page-manager';
+import { LineAndMarksManager, LineOperationResult, ExtractedContent } from './utils/line-marks-manager';
+import { 
   BufferState, 
   FileChangeStrategy 
-} = require('./types/buffer-types');
-const { 
+} from './types/buffer-types';
+import { 
   NotificationType, 
   BufferNotification 
-} = require('./types/notifications');
-const {
+} from './types/notifications';
+import {
   OperationPosition,
   OperationDescriptor,
   OperationDistanceCalculator
-} = require('./utils/operation-distance');
+} from './utils/operation-distance';
 
-module.exports = {
+// Export all the classes and types
+export {
   // Core classes
   PagedBuffer,
   BufferUndoSystem,
@@ -96,5 +97,43 @@ module.exports = {
   FileChangeStrategy
 };
 
-// For CommonJS compatibility
-module.exports.default = module.exports;
+// Default export for convenience
+export default {
+  // Core classes
+  PagedBuffer,
+  BufferUndoSystem,
+  VirtualPageManager,
+  LineAndMarksManager,
+  
+  // Storage implementations
+  PageStorage,
+  FilePageStorage,
+  MemoryPageStorage,
+  
+  // Enhanced utility classes
+  PageInfo,
+  LineInfo,
+  MarkInfo,
+  PageDescriptor,
+  PageAddressIndex,
+  LineOperationResult,
+  ExtractedContent,
+  
+  // Operation and undo system
+  BufferOperation,
+  OperationGroup,
+  OperationType,
+  
+  // Operation distance calculation
+  OperationPosition,
+  OperationDescriptor,
+  OperationDistanceCalculator,
+  
+  // Notifications
+  BufferNotification,
+  
+  // Enums and constants
+  BufferState,
+  NotificationType,
+  FileChangeStrategy
+};
