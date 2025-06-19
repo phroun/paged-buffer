@@ -6,19 +6,10 @@
 
 import { OperationDescriptor, OperationDistanceCalculator } from './utils/operation-distance';
 import {
-  type OperationType,
+  OperationType,
   type BufferOperation as IBufferOperationInterface,
   type DistanceCalculationOptions
 } from './types/common';
-
-/**
- * Operation types for undo/redo tracking
- */
-const OperationType = {
-  INSERT: 'insert' as const,
-  DELETE: 'delete' as const,
-  OVERWRITE: 'overwrite' as const
-} as const;
 
 /**
  * Global operation counter for determining chronological order
@@ -290,7 +281,7 @@ class BufferOperation implements IBufferOperationInterface {
     if (finalFirstStart <= finalSecondStart) {
       // First operation comes before second in final buffer
       return {
-        type: 'insert',
+        type: OperationType.INSERT,
         position: firstOp.preExecutionPosition,
         data: Buffer.concat([firstOp.data || Buffer.alloc(0), secondOp.data || Buffer.alloc(0)]),
         originalData: Buffer.alloc(0)
@@ -298,7 +289,7 @@ class BufferOperation implements IBufferOperationInterface {
     } else {
       // Second operation comes before first in final buffer
       return {
-        type: 'insert',
+        type: OperationType.INSERT,
         position: secondOp.preExecutionPosition,
         data: Buffer.concat([secondOp.data || Buffer.alloc(0), firstOp.data || Buffer.alloc(0)]),
         originalData: Buffer.alloc(0)
@@ -330,7 +321,7 @@ class BufferOperation implements IBufferOperationInterface {
     }
     
     return {
-      type: 'delete',
+      type: OperationType.DELETE,
       position: finalPosition,
       data: Buffer.alloc(0),
       originalData: combinedData
@@ -361,7 +352,7 @@ class BufferOperation implements IBufferOperationInterface {
     }
     
     return {
-      type: 'overwrite',
+      type: OperationType.OVERWRITE,
       position: startPos,
       data: finalData,
       originalData: originalData

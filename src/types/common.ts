@@ -25,7 +25,11 @@ export type SourceType = 'original' | 'storage' | 'memory';
 /**
  * Types of buffer operations
  */
-export type OperationType = 'insert' | 'delete' | 'overwrite';
+export enum OperationType {
+  INSERT = 'insert',
+  DELETE = 'delete',
+  OVERWRITE = 'overwrite'
+}
 
 // =================== PAGE DESCRIPTOR INTERFACE ===================
 

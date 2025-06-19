@@ -35,7 +35,8 @@
  */
 
 import { PagedBuffer } from './paged-buffer';
-import { BufferUndoSystem, BufferOperation, OperationGroup, OperationType } from './undo-system';
+import { BufferOperation, OperationType } from './buffer-operation';
+import { BufferUndoSystem, OperationGroup } from './undo-system';
 import { PageStorage } from './storage/page-storage';
 import { FilePageStorage } from './storage/file-page-storage';
 import { MemoryPageStorage } from './storage/memory-page-storage';

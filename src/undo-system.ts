@@ -4,7 +4,8 @@
  * @version 2.2.0
  */
 
-import { BufferOperation, OperationType } from './buffer-operation';
+import { OperationType } from './types/common';
+import { BufferOperation } from './buffer-operation';
 import { logger } from './utils/logger';
 import {
   type MarkTuple,
