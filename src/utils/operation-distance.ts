@@ -13,6 +13,8 @@ import {
   type OperationDistanceDebugInfo
 } from '../types/common';
 
+import { logger } from './logger';
+
 /**
  * Represents position information for an operation
  */
@@ -252,7 +254,7 @@ class OperationDistanceCalculator {
     distance: number
   ): void {
     const debugInfo = this._getDebugDistanceCalculation(firstOp, secondOp, range, distance);
-    console.log('[OperationDistance]', JSON.stringify(debugInfo, null, 2));
+    logger.debug('[OperationDistance]', JSON.stringify(debugInfo, null, 2));
   }
   
   /**

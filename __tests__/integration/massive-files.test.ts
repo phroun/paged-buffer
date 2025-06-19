@@ -2,13 +2,14 @@
  * Integration Tests for Massive Files - Corrected to match design specifications
  */
 
-const { PagedBuffer, FilePageStorage, MemoryPageStorage } = require('../../src');
-const { testUtils } = require('../setup');
+import { PagedBuffer, FilePageStorage, MemoryPageStorage } from '../../src';
+import { testUtils } from '../setup';
+
 jest.setTimeout(60000);
 
 describe('Massive File Integration Tests', () => {
-  let buffer;
-  let storage;
+  let buffer: PagedBuffer;
+  let storage: FilePageStorage;
 
   beforeEach(async () => {
     storage = new FilePageStorage();
@@ -43,7 +44,7 @@ describe('Massive File Integration Tests', () => {
   });
 
   describe('Large File Operations', () => {
-    let largeFilePath;
+    let largeFilePath: string;
 
     beforeEach(async () => {
       largeFilePath = await testUtils.createLargeFile(50);
@@ -90,7 +91,7 @@ describe('Massive File Integration Tests', () => {
       const deleteTime = Date.now() - startTime;
       
       expect(deleteTime).toBeLessThan(2000);
-      expect(deleted.length).toBe(deleteSize);
+      expect((deleted as Buffer).length).toBe(deleteSize);
       expect(buffer.getTotalSize()).toBe(originalSize - deleteSize);
     });
 
@@ -102,12 +103,12 @@ describe('Massive File Integration Tests', () => {
         pageSize * 3 + 500
       );
       
-      expect(crossPageRead.length).toBe(pageSize * 2 + 1000);
+      expect((crossPageRead as Buffer).length).toBe(pageSize * 2 + 1000);
       
       await buffer.insertBytes(pageSize, Buffer.from('PAGE_BOUNDARY_INSERT'));
       
       const verification = await buffer.getBytes(pageSize - 10, pageSize + 30);
-      expect(verification.toString()).toContain('PAGE_BOUNDARY_INSERT');
+      expect((verification as Buffer).toString()).toContain('PAGE_BOUNDARY_INSERT');
     });
   });
 
@@ -118,7 +119,7 @@ describe('Massive File Integration Tests', () => {
       
       await smallMemoryBuffer.loadFile(filePath);
       
-      const accessPoints = [];
+      const accessPoints: number[] = [];
       for (let i = 0; i < 20; i++) {
         const position = Math.floor(Math.random() * smallMemoryBuffer.getTotalSize());
         accessPoints.push(position);
@@ -172,7 +173,7 @@ describe('Massive File Integration Tests', () => {
       
       // Verify insertion
       const afterInsert = await buffer.getBytes(insertPosition, insertPosition + 10);
-      expect(afterInsert.every(byte => byte === 90)).toBe(true);
+      expect((afterInsert as Buffer).every(byte => byte === 90)).toBe(true);
       
       expect(buffer.canUndo()).toBe(true);
       
@@ -187,7 +188,7 @@ describe('Massive File Integration Tests', () => {
       
       // Verify undo worked
       const afterUndo = await buffer.getBytes(insertPosition, insertPosition + 1000);
-      testUtils.compareBuffers(afterUndo, originalData, 'Undo verification');
+      testUtils.compareBuffers(afterUndo as Buffer, originalData as Buffer, 'Undo verification');
     });
 
     test('should manage undo memory efficiently with large operations', async () => {
@@ -245,7 +246,7 @@ describe('Massive File Integration Tests', () => {
           await tinyBuffer.getBytes(i * 10000, i * 10000 + 100);
         } catch (error) {
           // Expected for out-of-bounds, but shouldn't crash
-          expect(error.message).toMatch(/beyond end of buffer|detached/);
+          expect((error as Error).message).toMatch(/beyond end of buffer|detached/);
         }
       }
     });
@@ -262,7 +263,7 @@ describe('Massive File Integration Tests', () => {
         await buffer.saveFile();
       } catch (error) {
         // May fail due to disk space, but should fail gracefully
-        expect(error.message).toMatch(/Failed to|ENOSPC|disk/);
+        expect((error as Error).message).toMatch(/Failed to|ENOSPC|disk/);
       }
     });
   });

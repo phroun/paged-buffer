@@ -2,14 +2,15 @@
  * Undo/Redo System Tests - Fixed with Clock Injection and Proper Expectations
  */
 
-const { PagedBuffer, MemoryPageStorage } = require('../src');
-const { testUtils } = require('./setup');
+import { PagedBuffer, MemoryPageStorage } from '../src';
+import { testUtils } from './setup';
+
 jest.setTimeout(10000);
 
 describe('Undo/Redo System', () => {
-  let buffer;
-  let mockClock;
-  let currentTime;
+  let buffer: PagedBuffer;
+  let mockClock: () => number;
+  let currentTime: number;
 
   beforeEach(() => {
     const storage = new MemoryPageStorage();
@@ -33,7 +34,7 @@ describe('Undo/Redo System', () => {
   });
 
   // Helper function to advance mock time
-  const advanceTime = (ms) => {
+  const advanceTime = (ms: number): void => {
     currentTime += ms;
   };
 
@@ -211,8 +212,8 @@ describe('Undo/Redo System', () => {
       expect(buffer.inUndoTransaction()).toBe(true);
       
       const tx = buffer.getCurrentUndoTransaction();
-      expect(tx.name).toBe('Find and Replace');
-      expect(tx.operationCount).toBe(0); // Changed from operations to operationCount
+      expect(tx?.name).toBe('Find and Replace');
+      expect(tx?.operationCount).toBe(0); // Changed from operations to operationCount
       
       await buffer.deleteBytes(6, 11); // Delete "World"
       await buffer.insertBytes(6, Buffer.from('Universe'));
@@ -482,7 +483,7 @@ describe('Undo/Redo System', () => {
       
       buffer.beginUndoTransaction('Test Transaction');
       
-      if (buffer.undoSystem.activeTransaction) {
+      if (buffer.undoSystem?.activeTransaction) {
         expect(buffer.undoSystem.activeTransaction.startTime).toBe(transactionStartTime);
       }
       

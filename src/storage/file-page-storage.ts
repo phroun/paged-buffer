@@ -17,9 +17,9 @@ class FilePageStorage extends PageStorage {
     super();
     this.tempDir = tempDir ?? path.join(os.tmpdir(), 'buffer-pages');
     // Fix: Use setImmediate instead of setTimeout, and make the callback async
-    setImmediate(async () => {
-      await this._ensureTempDir();
-    });
+    (function(my) {
+      void my._ensureTempDir();
+    })(this);
   }
 
   private async _ensureTempDir(): Promise<void> {

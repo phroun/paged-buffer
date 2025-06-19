@@ -12,7 +12,6 @@ import {
   type ILineAndMarksManager,
   type MarkTuple,
   type RelativeMarkTuple,
-  type MarkInfo,
   type LineCharPosition,
   type LineAndMarksManagerMemoryStats
 } from '../types/common';

@@ -148,6 +148,22 @@ class BufferOperation implements IBufferOperationInterface {
   }
 
   /**
+   * Get the length of content that an operation inserts into the final buffer
+   */
+  getInsertedLength(): number {
+    switch (this.type) {
+      case OperationType.INSERT:
+        return this.data ? this.data.length : 0;
+      case OperationType.DELETE:
+        return 0;
+      case OperationType.OVERWRITE:
+        return this.data ? this.data.length : 0;
+      default:
+        return 0;
+    }
+  }
+
+  /**
    * Check if this operation can be merged with another - FIXED
    */
   canMergeWith(other: BufferOperation, timeWindow: number = 15000, positionWindow: number = -1): boolean {

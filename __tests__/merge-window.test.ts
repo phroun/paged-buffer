@@ -3,10 +3,10 @@
  * Updated for new undo system architecture
  */
 
-const { PagedBuffer } = require('../src/paged-buffer');
+import { PagedBuffer } from '../src/paged-buffer';
 
 describe('PagedBuffer - Merge Window Behavior (Corrected)', () => {
-  let buffer;
+  let buffer: PagedBuffer;
 
   beforeEach(() => {
     buffer = new PagedBuffer(64);
@@ -129,14 +129,14 @@ describe('PagedBuffer - Merge Window Behavior (Corrected)', () => {
 
   describe('Verify Merge Window = 1 Allows Distance 1 Operations', () => {
     beforeEach(() => {
-      buffer.undoSystem.configure({
+      buffer.undoSystem?.configure({
         mergeTimeWindow: 10000,
         mergePositionWindow: 1  // Allow distance 0 and 1 to merge
       });
     });
 
     test('should merge insertions with 1 character gap when window = 1 - STACK DEBUG', async () => {
-      buffer.undoSystem.configure({
+      buffer.undoSystem?.configure({
         mergeTimeWindow: 10000,
         mergePositionWindow: 1  // Allow distance 0 and 1 to merge
       });
@@ -199,7 +199,7 @@ describe('PagedBuffer - Merge Window Behavior (Corrected)', () => {
 
   describe('Complex Real-World Scenarios', () => {
     beforeEach(() => {
-      buffer.undoSystem.configure({
+      buffer.undoSystem?.configure({
         mergeTimeWindow: 10000,
         mergePositionWindow: 0  // Back to distance 0 only
       });
@@ -209,7 +209,7 @@ describe('PagedBuffer - Merge Window Behavior (Corrected)', () => {
       // Set up mock clock to control timing
       let currentTime = 1000;
       const mockClock = () => currentTime;
-      buffer.undoSystem.setClock(mockClock);
+      buffer.undoSystem?.setClock(mockClock);
 
       // Type "Hello" (should merge into one group due to rapid timing)
       await buffer.insertBytes(0, Buffer.from('H'));
@@ -341,20 +341,20 @@ test('DEBUG: Verify new undo system architecture', async () => {
   // Step 1: Insert " NEW" at position 4
   console.log('\n--- Step 1: Insert " NEW" at pos 4 ---');
   await buffer.insertBytes(4, Buffer.from(' NEW'));
-  console.log('After step 1 - undoStackSize:', buffer.undoSystem.undoStack.length);
+  console.log('After step 1 - undoStackSize:', buffer.undoSystem?.undoStack.length);
   
   // Step 2: Insert "Modified " at position 0 - should NOT merge (different position)
   console.log('\n--- Step 2: Insert "Modified " at pos 0 ---');
   console.log('Before step 2 - about to test merge with pos 4 → pos 0');
   
   await buffer.insertBytes(0, Buffer.from('Modified '));
-  console.log('After step 2 - undoStackSize:', buffer.undoSystem.undoStack.length);
+  console.log('After step 2 - undoStackSize:', buffer.undoSystem?.undoStack.length);
   
   const content = await buffer.getBytes(0, buffer.getTotalSize());
   console.log('Current content:', `"${content.toString()}"`);
   
   // Verify that operations are properly on the undo stack
-  expect(buffer.undoSystem.undoStack.length).toBeGreaterThan(0);
+  expect(buffer.undoSystem?.undoStack.length).toBeGreaterThan(0);
   expect(buffer.canUndo()).toBe(true);
   
   console.log('=== Architecture verification complete ===');

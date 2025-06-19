@@ -3,7 +3,7 @@
  * This isolates the merge decision from the complex buffer operations
  */
 
-const { BufferOperation, OperationType } = require('../src/undo-system');
+import { BufferOperation, OperationType } from '../src/buffer-operation';
 
 describe('Operation Distance Calculation Tests', () => {
 
