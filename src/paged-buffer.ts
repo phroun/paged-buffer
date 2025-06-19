@@ -18,7 +18,8 @@ import { LineAndMarksManager, ExtractedContent } from './utils/line-marks-manage
 import {
   type IBuffer,
   type MarkInfo,
-  type LineCharPosition
+  type LineCharPosition,
+  type RelativeMarkTuple
 } from './types/common';
 
 // Import buffer-specific types (these would need to be created)
@@ -541,9 +542,9 @@ class PagedBuffer implements IBuffer {
   }
 
   /**
-   * Insert bytes at absolute position with optional marks
+   * Enhanced insertBytes with marks support - FIXED parameter handling
    */
-  async insertBytes(position: number, data: Buffer, marks: MarkInfo[] = []): Promise<void> {
+  async insertBytes(position: number, data: Buffer, marks: MarkInfo[] | RelativeMarkTuple[] = []): Promise<void> {
     if (position < 0) {
       throw new Error('Invalid position: cannot be negative');
     }
@@ -563,8 +564,19 @@ class PagedBuffer implements IBuffer {
 
     logger.debug('[DEBUG] Pre-op marks:', preOpMarksSnapshot);
 
-    // Convert MarkInfo to RelativeMarkTuple for the lineAndMarksManager
-    const relativeMarks = marks.map(mark => [mark.name, mark.relativeOffset] as [string, number]);
+    // FIXED: Handle both MarkInfo objects and RelativeMarkTuple arrays
+    let relativeMarks: RelativeMarkTuple[];
+    if (marks.length > 0) {
+      if (Array.isArray(marks[0])) {
+        // Already tuples
+        relativeMarks = marks as RelativeMarkTuple[];
+      } else {
+        // MarkInfo objects - convert to tuples
+        relativeMarks = (marks as MarkInfo[]).map(mark => [mark.name, mark.relativeOffset]);
+      }
+    } else {
+      relativeMarks = [];
+    }
 
     // Always use enhanced method (handles both VPM and mark updates)
     await this.lineAndMarksManager.insertBytesWithMarks(position, data, relativeMarks);
@@ -582,7 +594,7 @@ class PagedBuffer implements IBuffer {
   }
 
   /**
-   * Enhanced deleteBytes with marks reporting
+   * Enhanced deleteBytes with marks reporting - FIXED to handle tuples
    */
   async deleteBytes(start: number, end: number, reportMarks: boolean = false): Promise<Buffer | ExtractedContent> {
     if (start < 0 || end < 0) {
@@ -625,16 +637,16 @@ class PagedBuffer implements IBuffer {
     
     // Return appropriate format based on reportMarks parameter
     if (reportMarks) {
-      return result; // ExtractedContent with marks info
+      return result; // ExtractedContent with marks info as tuples
     } else {
       return result.data; // Just the Buffer for backward compatibility
     }
   }
 
   /**
-   * Enhanced overwriteBytes with marks support
+   * Enhanced overwriteBytes with marks support - FIXED to handle tuples
    */
-  async overwriteBytes(position: number, data: Buffer, marks: MarkInfo[] = []): Promise<Buffer | ExtractedContent> {
+  async overwriteBytes(position: number, data: Buffer, marks: MarkInfo[] | RelativeMarkTuple[] = []): Promise<Buffer | ExtractedContent> {
     if (position < 0) {
       throw new Error('Invalid position: cannot be negative');
     }
@@ -656,8 +668,19 @@ class PagedBuffer implements IBuffer {
     const overwriteEnd = Math.min(position + data.length, this.totalSize);
     const overwrittenDataForUndo = await this.getBytes(position, overwriteEnd) as Buffer;
 
-    // Convert MarkInfo to RelativeMarkTuple for the lineAndMarksManager
-    const relativeMarks = marks.map(mark => [mark.name, mark.relativeOffset] as [string, number]);
+    // FIXED: Handle both MarkInfo objects and RelativeMarkTuple arrays
+    let relativeMarks: RelativeMarkTuple[];
+    if (marks.length > 0) {
+      if (Array.isArray(marks[0])) {
+        // Already tuples
+        relativeMarks = marks as RelativeMarkTuple[];
+      } else {
+        // MarkInfo objects - convert to tuples
+        relativeMarks = (marks as MarkInfo[]).map(mark => [mark.name, mark.relativeOffset]);
+      }
+    } else {
+      relativeMarks = [];
+    }
 
     // Always use enhanced method (handles both VPM and mark updates)
     const result = await this.lineAndMarksManager.overwriteBytesWithMarks(position, data, relativeMarks);
@@ -675,7 +698,7 @@ class PagedBuffer implements IBuffer {
     
     // BACKWARD COMPATIBILITY: Return Buffer if no marks provided, ExtractedContent if marks provided
     if (marks.length > 0) {
-      return result; // ExtractedContent
+      return result; // ExtractedContent with tuple marks
     } else {
       return result.data; // Buffer (legacy behavior)
     }
@@ -888,7 +911,7 @@ class PagedBuffer implements IBuffer {
    * Get enhanced memory usage stats with line and marks information
    */
   getMemoryStats(): MemoryStats {
-    const vpmStats = this.virtualPageManager.getMemoryStats();
+    const vmpStats = this.virtualPageManager.getMemoryStats();
     const lmStats = this.lineAndMarksManager.getMemoryStats();
     
     const undoStats = this.undoSystem ? this.undoSystem.getStats() : {
@@ -902,26 +925,26 @@ class PagedBuffer implements IBuffer {
     
     return {
       // VPM stats
-      totalPages: vpmStats.totalPages,
-      loadedPages: vpmStats.loadedPages,
-      dirtyPages: vpmStats.dirtyPages,
+      totalPages: vmpStats.totalPages,
+      loadedPages: vmpStats.loadedPages,
+      dirtyPages: vmpStats.dirtyPages,
       detachedPages: 0, // Enhanced VPM handles this differently
-      memoryUsed: vpmStats.memoryUsed,
+      memoryUsed: vmpStats.memoryUsed,
       maxMemoryPages: this.maxMemoryPages,
       
       // Line and marks stats
       totalLines: lmStats.totalLines,
       globalMarksCount: lmStats.globalMarksCount,
       pageIndexSize: lmStats.pageIndexSize,
-      linesMemory: vpmStats.linesMemory + lmStats.estimatedLinesCacheMemory,
-      marksMemory: vpmStats.marksMemory + lmStats.estimatedMarksMemory,
+      linesMemory: vmpStats.linesMemory + lmStats.estimatedLinesCacheMemory,
+      marksMemory: vmpStats.marksMemory + lmStats.estimatedMarksMemory,
       lineStartsCacheValid: lmStats.lineStartsCacheValid,
       
       // Buffer stats
       state: this.state,
       hasUnsavedChanges: this.hasUnsavedChanges,
-      virtualSize: vpmStats.virtualSize,
-      sourceSize: vpmStats.sourceSize,
+      virtualSize: vmpStats.virtualSize,
+      sourceSize: vmpStats.sourceSize,
       
       // Undo stats
       undo: undoStats

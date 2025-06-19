@@ -3,13 +3,13 @@
  * Tests marks system, line operations, and edge cases
  */
 
-const { PagedBuffer } = require('../src/paged-buffer');
-const { LineAndMarksManager } = require('../src/utils/line-marks-manager');
-const { testUtils } = require('./setup');
+import { PagedBuffer } from '../src/paged-buffer';
+import { LineAndMarksManager } from '../src/utils/line-marks-manager';
+import { testUtils } from './setup';
 
 describe('LineAndMarksManager - Page Coordinate Marks System', () => {
-  let buffer;
-  let lineAndMarksManager;
+  let buffer: PagedBuffer;
+  let lineAndMarksManager: LineAndMarksManager;
 
   beforeEach(() => {
     buffer = new PagedBuffer(128); // Small pages for testing page operations
@@ -104,7 +104,7 @@ describe('LineAndMarksManager - Page Coordinate Marks System', () => {
       lineAndMarksManager.setMark('mark3', 250);  // Third page
 
       // Check internal storage (accessing private members for testing)
-      const globalMarks = lineAndMarksManager.globalMarks;
+      const globalMarks = (lineAndMarksManager as any).globalMarks;
       expect(globalMarks.size).toBe(3);
 
       // Each mark should be stored as [pageKey, offset]
@@ -142,7 +142,7 @@ describe('LineAndMarksManager - Page Coordinate Marks System', () => {
       lineAndMarksManager.setMark('page2_mark2', 180);
 
       // Check page index (accessing private member for testing)
-      const pageToMarks = lineAndMarksManager.pageToMarks;
+      const pageToMarks = (lineAndMarksManager as any).pageToMarks;
       expect(pageToMarks.size).toBeGreaterThan(0);
 
       // Should have marks distributed across pages
@@ -221,7 +221,7 @@ describe('LineAndMarksManager - Page Coordinate Marks System', () => {
   });
 
   describe('Page Operations and Marks Transfer', () => {
-    let largeBuff;
+    let largeBuff: PagedBuffer;
 
     beforeEach(() => {
       // Create a buffer that will definitely trigger page operations
@@ -277,8 +277,8 @@ describe('LineAndMarksManager - Page Coordinate Marks System', () => {
       lm.setMark('valid2', 50);
       
       // Manually create an orphaned mark by corrupting internal state
-      lm.globalMarks.set('orphan', ['nonexistent_page', 10]);
-      lm.pageToMarks.set('nonexistent_page', new Set(['orphan']));
+      (lm as any).globalMarks.set('orphan', ['nonexistent_page', 10]);
+      (lm as any).pageToMarks.set('nonexistent_page', new Set(['orphan']));
 
       const orphanedMarks = lm.validateAndCleanupMarks();
       
@@ -325,7 +325,7 @@ describe('LineAndMarksManager - Page Coordinate Marks System', () => {
     });
 
     test('should insert marks from relative positions', () => {
-      const marks = [
+      const marks: Array<[string, number]> = [
         [ 'inserted1', 0 ],
         [ 'inserted2', 5 ],
         [ 'inserted3', 10 ]
@@ -410,7 +410,7 @@ describe('LineAndMarksManager - Page Coordinate Marks System', () => {
 
     test('should import marks from persistence object', () => {
       const totalSize = buffer.getTotalSize();
-      const importData = {
+      const importData: Record<string, number> = {
         loaded1: 10,
         loaded2: 20,
         loaded3: Math.min(25, totalSize) // Ensure within bounds
@@ -424,7 +424,7 @@ describe('LineAndMarksManager - Page Coordinate Marks System', () => {
     });
 
     test('should handle invalid persistence data gracefully', () => {
-      const invalidData = {
+      const invalidData: Record<string, any> = {
         valid: 10,
         invalid_negative: -5,
         invalid_string: 'not_a_number',
@@ -483,7 +483,7 @@ describe('LineAndMarksManager - Page Coordinate Marks System', () => {
       lineAndMarksManager.setMark('test_mark', 15);
 
       // Test with marks-aware operations
-      const marks = [[ 'inserted_mark', 3 ]];
+      const marks: Array<[string, number]> = [[ 'inserted_mark', 3 ]];
       await buffer.insertBytes(10, Buffer.from('NEW '), marks);
 
       expect(lineAndMarksManager.getMark('test_mark')).toBe(19); // Shifted by 4
@@ -517,17 +517,17 @@ describe('LineAndMarksManager - Page Coordinate Marks System', () => {
       const line2 = lineAndMarksManager.getLineInfo(2);
       const line3 = lineAndMarksManager.getLineInfo(3);
 
-      expect(line1.lineNumber).toBe(1);
-      expect(line1.byteStart).toBe(0);
-      expect(line1.byteEnd).toBe(7); // "Line 1\n"
+      expect(line1?.lineNumber).toBe(1);
+      expect(line1?.byteStart).toBe(0);
+      expect(line1?.byteEnd).toBe(7); // "Line 1\n"
 
-      expect(line2.lineNumber).toBe(2);
-      expect(line2.byteStart).toBe(7);
-      expect(line2.byteEnd).toBe(14); // "Line 2\n"
+      expect(line2?.lineNumber).toBe(2);
+      expect(line2?.byteStart).toBe(7);
+      expect(line2?.byteEnd).toBe(14); // "Line 2\n"
 
-      expect(line3.lineNumber).toBe(3);
-      expect(line3.byteStart).toBe(14);
-      expect(line3.byteEnd).toBe(21); // "Line 3\n"
+      expect(line3?.lineNumber).toBe(3);
+      expect(line3?.byteStart).toBe(14);
+      expect(line3?.byteEnd).toBe(21); // "Line 3\n"
     });
 
     test('should convert addresses to line numbers', () => {
@@ -554,9 +554,9 @@ describe('LineAndMarksManager - Page Coordinate Marks System', () => {
       const lines = lineAndMarksManager.getMultipleLines(1, 3);
 
       expect(lines.length).toBe(3);
-      expect(lines[0].lineNumber).toBe(1);
-      expect(lines[1].lineNumber).toBe(2);
-      expect(lines[2].lineNumber).toBe(3);
+      expect(lines[0]?.lineNumber).toBe(1);
+      expect(lines[1]?.lineNumber).toBe(2);
+      expect(lines[2]?.lineNumber).toBe(3);
     });
 
     test('should include marks in line info', () => {
@@ -566,8 +566,8 @@ describe('LineAndMarksManager - Page Coordinate Marks System', () => {
       const line1 = lineAndMarksManager.getLineInfo(1);
       const line2 = lineAndMarksManager.getLineInfo(2);
 
-      expect(line1.marks).toContainEqual([ 'line1_mark', 3 ]);
-      expect(line2.marks).toContainEqual([ 'line2_mark', 10 ]);
+      expect(line1?.marks).toContainEqual([ 'line1_mark', 3 ]);
+      expect(line2?.marks).toContainEqual([ 'line2_mark', 10 ]);
     });
   });
 
@@ -577,8 +577,8 @@ describe('LineAndMarksManager - Page Coordinate Marks System', () => {
       
       expect(lineAndMarksManager.getTotalLineCount()).toBe(1);
       expect(lineAndMarksManager.getLineInfo(1)).toBeTruthy();
-      expect(lineAndMarksManager.getLineInfo(1).byteStart).toBe(0);
-      expect(lineAndMarksManager.getLineInfo(1).byteEnd).toBe(0);
+      expect(lineAndMarksManager.getLineInfo(1)?.byteStart).toBe(0);
+      expect(lineAndMarksManager.getLineInfo(1)?.byteEnd).toBe(0);
     });
 
     test('should handle single character content', () => {

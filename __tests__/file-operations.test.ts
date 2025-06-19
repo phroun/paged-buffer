@@ -4,24 +4,24 @@
  * (Non-corruption scenarios)
  */
 
-const fs = require('fs').promises;
-const path = require('path');
-const { PagedBuffer } = require('../src/paged-buffer');
-const { FilePageStorage } = require('../src/storage/file-page-storage');
-const { BufferState } = require('../src/types/buffer-types');
-const { testUtils } = require('./setup');
+import { promises as fs } from 'fs';
+import * as path from 'path';
+import { PagedBuffer } from '../src/paged-buffer';
+import { FilePageStorage } from '../src/storage/file-page-storage';
+import { BufferState } from '../src/types/buffer-types';
+import { testUtils } from './setup';
 
 jest.setTimeout(15000);
 
 describe('File Operations', () => {
-  let buffer;
-  let storage;
+  let buffer: PagedBuffer;
+  let storage: FilePageStorage;
 
   beforeEach(async () => {
     storage = new FilePageStorage();
     buffer = new PagedBuffer(1024, storage, 10);
     // Disable corruption detection for basic file operations tests
-    buffer.corruptionDetectionEnabled = false;
+    (buffer as any).corruptionDetectionEnabled = false;
   });
 
   describe('File Loading', () => {
@@ -33,7 +33,7 @@ describe('File Operations', () => {
       
       expect(buffer.filename).toBe(filePath);
       expect(buffer.getTotalSize()).toBe(content.length);
-      expect(buffer.getState()).toBe(BufferState.CLEAN); // check
+      expect(buffer.getState()).toBe(BufferState.CLEAN);
       expect(buffer.hasChanges()).toBe(false);
       
       const loadedContent = await buffer.getBytes(0, buffer.getTotalSize());
@@ -58,7 +58,7 @@ describe('File Operations', () => {
       await buffer.loadFile(filePath);
       
       expect(buffer.getTotalSize()).toBe(0);
-      expect(buffer.getState()).toBe(BufferState.CLEAN); // check
+      expect(buffer.getState()).toBe(BufferState.CLEAN);
       expect(buffer.hasChanges()).toBe(false);
     });
 
@@ -82,7 +82,7 @@ describe('File Operations', () => {
       
       expect(buffer.fileChecksum).toBeTruthy();
       expect(typeof buffer.fileChecksum).toBe('string');
-      expect(buffer.fileChecksum.length).toBe(32); // MD5 hex length
+      expect(buffer.fileChecksum?.length).toBe(32); // MD5 hex length
     });
 
     test('should load large files efficiently', async () => {
@@ -116,7 +116,7 @@ describe('File Operations', () => {
       await buffer.loadFile(filePath);
       
       // Verify initial state is clean
-      expect(buffer.getState()).toBe(BufferState.CLEAN); // check
+      expect(buffer.getState()).toBe(BufferState.CLEAN);
       expect(buffer.hasChanges()).toBe(false);
       
       // Save without modifications to same file - should be no-op
@@ -210,7 +210,7 @@ describe('File Operations', () => {
       
       // Metadata should be updated
       expect(buffer.fileSize).toBeGreaterThan(originalSize);
-      expect(buffer.fileMtime.getTime()).toBeGreaterThan(originalMtime.getTime());
+      expect(buffer.fileMtime?.getTime()).toBeGreaterThan(originalMtime?.getTime() ?? 0);
       expect(buffer.totalSize).toBe(buffer.fileSize);
     });
   });
@@ -277,7 +277,7 @@ describe('File Operations', () => {
       
       await expect(buffer.saveAs()).rejects.toThrow('Filename required');
       await expect(buffer.saveAs('')).rejects.toThrow('Filename required');
-      await expect(buffer.saveAs(null)).rejects.toThrow('Filename required');
+      await expect(buffer.saveAs(null as any)).rejects.toThrow('Filename required');
     });
   });
 
@@ -361,7 +361,7 @@ describe('File Operations', () => {
       
       expect(buffer.filename).toBeNull();
       expect(buffer.getTotalSize()).toBe(Buffer.byteLength(content));
-      expect(buffer.getState()).toBe(BufferState.CLEAN); // check
+      expect(buffer.getState()).toBe(BufferState.CLEAN);
       expect(buffer.hasChanges()).toBe(false);
       
       const loadedContent = await buffer.getBytes(0, buffer.getTotalSize());
@@ -375,7 +375,7 @@ describe('File Operations', () => {
       
       expect(buffer.filename).toBeNull();
       expect(buffer.getTotalSize()).toBe(binaryData.length);
-      expect(buffer.getState()).toBe(BufferState.CLEAN); // check
+      expect(buffer.getState()).toBe(BufferState.CLEAN);
       expect(buffer.hasChanges()).toBe(false);
       
       const loadedData = await buffer.getBytes(0, buffer.getTotalSize());
@@ -386,7 +386,7 @@ describe('File Operations', () => {
       buffer.loadContent('');
       
       expect(buffer.getTotalSize()).toBe(0);
-      expect(buffer.getState()).toBe(BufferState.CLEAN); // check
+      expect(buffer.getState()).toBe(BufferState.CLEAN);
       expect(buffer.hasChanges()).toBe(false);
     });
 
@@ -394,7 +394,7 @@ describe('File Operations', () => {
       buffer.loadBinaryContent(Buffer.alloc(0));
       
       expect(buffer.getTotalSize()).toBe(0);
-      expect(buffer.getState()).toBe(BufferState.CLEAN); // check
+      expect(buffer.getState()).toBe(BufferState.CLEAN);
       expect(buffer.hasChanges()).toBe(false);
     });
   });
@@ -405,7 +405,7 @@ describe('File Operations', () => {
       await buffer.loadFile(filePath);
       
       // Verify initial state
-      expect(buffer.getState()).toBe(BufferState.CLEAN); // check
+      expect(buffer.getState()).toBe(BufferState.CLEAN);
       expect(buffer.hasChanges()).toBe(false);
       
       // Make modification
@@ -458,7 +458,7 @@ describe('File Operations', () => {
       const saveTime = Date.now() - startTime;
       
       expect(saveTime).toBeLessThan(10000); // Should save reasonably fast
-      expect(buffer.getState()).toBe(BufferState.CLEAN); // check
+      expect(buffer.getState()).toBe(BufferState.CLEAN);
       expect(buffer.hasChanges()).toBe(false);
       
       // Verify modification was saved
@@ -580,5 +580,4 @@ describe('File Operations', () => {
       expect(stats.totalPages).toBeGreaterThan(500); // Large file has many pages
     });
   });
-
 });

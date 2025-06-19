@@ -45,13 +45,13 @@ class LineOperationResult {
 }
 
 /**
- * Represents extracted content with marks
+ * Represents extracted content with marks - FIXED to use tuples consistently
  */
 class ExtractedContent {
   public data: Buffer; // Buffer containing the extracted data
-  public marks: MarkInfo[]; // Array of {name, relativeOffset} for marks in the content
+  public marks: RelativeMarkTuple[]; // Array of [name, relativeOffset] tuples for marks in the content
 
-  constructor(data: Buffer, marks: MarkInfo[] = []) {
+  constructor(data: Buffer, marks: RelativeMarkTuple[] = []) {
     this.data = data;
     this.marks = marks;
   }
@@ -498,10 +498,10 @@ class LineAndMarksManager implements ILineAndMarksManager {
     }
 
     const marks = this.getMarksInRange(start, end - 1);
-    const relativeMarks: MarkInfo[] = marks.map(mark => ({
-      name: mark[0],
-      relativeOffset: mark[1] - start
-    }));
+    const relativeMarks: RelativeMarkTuple[] = marks.map(mark => [
+      mark[0], // name
+      mark[1] - start // relative offset
+    ]);
 
     return new ExtractedContent(data, relativeMarks);
   }
@@ -578,14 +578,8 @@ class LineAndMarksManager implements ILineAndMarksManager {
     
     logger.debug('[DEBUG] Marks after VPM deleteRange:', this.getAllMarks());
     
-    // Convert RelativeMarkTuple to MarkInfo for return type
-    const marksInfo: MarkInfo[] = marksInDeletedContent.map(mark => ({
-      name: mark[0],
-      relativeOffset: mark[1]
-    }));
-    
-    // Return deleted data with marks report (if requested)
-    return new ExtractedContent(deletedData, marksInfo);
+    // Return deleted data with marks report (if requested) - using tuples directly
+    return new ExtractedContent(deletedData, marksInDeletedContent);
   }
 
   /**
@@ -655,13 +649,8 @@ class LineAndMarksManager implements ILineAndMarksManager {
       logger.debug('[DEBUG] Marks after inserting new marks:', this.getAllMarks());
     }
     
-    // Convert RelativeMarkTuple to MarkInfo for return type
-    const marksInfo: MarkInfo[] = marksInOverwrittenContent.map(mark => ({
-      name: mark[0],
-      relativeOffset: mark[1]
-    }));
-    
-    return new ExtractedContent(overwrittenData, marksInfo);
+    // Return overwritten data with marks report - using tuples directly
+    return new ExtractedContent(overwrittenData, marksInOverwrittenContent);
   }
 
   /**
@@ -803,7 +792,7 @@ class LineAndMarksManager implements ILineAndMarksManager {
       // Use cached newline count if available
       if (descriptor.lineInfoCached) {
         lineCount += descriptor.newlineCount;
-      } else if (this.vpm && this.vpm.pageCache.has(descriptor.pageKey)) {
+      } else if (this.vpm?.pageCache.has(descriptor.pageKey)) {
         // Page is loaded - count newlines and cache the result
         const pageInfo = this.vpm.pageCache.get(descriptor.pageKey)!;
         pageInfo.ensureLineCacheValid();

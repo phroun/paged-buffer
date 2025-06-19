@@ -73,7 +73,7 @@ class OperationDescriptor {
     
     const descriptor = new OperationDescriptor(
       bufferOp.type,
-      bufferOp.preExecutionPosition || bufferOp.position, // Fallback for legacy
+      bufferOp.preExecutionPosition ?? bufferOp.position, // Fallback for legacy
       dataLength,
       originalDataLength,
       bufferOp.operationNumber

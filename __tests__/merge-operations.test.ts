@@ -1,21 +1,27 @@
 /**
  * Operation Merging Logic Tests
  * Tests for BufferOperation.canMergeWith() and mergeWith() methods
- * Targets the uncovered branches in buffer-operation.js
+ * Targets the uncovered branches in buffer-operation.ts
  */
 
-const { BufferOperation, OperationType, resetOperationCounter } = require('../src/buffer-operation');
-const { testUtils } = require('./setup');
+import { BufferOperation, OperationType, resetOperationCounter } from '../src/buffer-operation';
+import { testUtils } from './setup';
 
 describe('Operation Merging Logic', () => {
-  let mockTime;
+  let mockTime: number;
   
   beforeEach(() => {
     resetOperationCounter();
     mockTime = 1000;
   });
 
-  const createOperation = (type, position, data, originalData = null, timeOffset = 0) => {
+  const createOperation = (
+    type: OperationType, 
+    position: number, 
+    data: string | null, 
+    originalData: string | null = null, 
+    timeOffset: number = 0
+  ): BufferOperation => {
     const timestamp = mockTime + timeOffset;
     const dataBuffer = data ? Buffer.from(data) : null;
     const originalBuffer = originalData ? Buffer.from(originalData) : null;
@@ -104,7 +110,7 @@ describe('Operation Merging Logic', () => {
       const op2 = createOperation(OperationType.INSERT, 15, 'world');
       
       // Mock getLogicalDistance to throw an error to test fallback
-      op1.getLogicalDistance = () => {
+      (op1 as any).getLogicalDistance = () => {
         throw new Error('Distance calculation failed');
       };
       
@@ -173,7 +179,7 @@ describe('Operation Merging Logic', () => {
       
       expect(op1.type).toBe(OperationType.INSERT);
       expect(op1.preExecutionPosition).toBe(10);
-      expect(op1.data.toString()).toBe('helloworld');
+      expect(op1.data?.toString()).toBe('helloworld');
       expect(op1.timestamp).toBe(mockTime); // Should keep earliest timestamp
     });
 
@@ -185,7 +191,7 @@ describe('Operation Merging Logic', () => {
       
       expect(op1.type).toBe(OperationType.INSERT);
       expect(op1.preExecutionPosition).toBe(10);
-      expect(op1.data.toString()).toBe('helloworld');
+      expect(op1.data?.toString()).toBe('helloworld');
       expect(op1.timestamp).toBe(mockTime); // Should keep earliest timestamp
     });
 
@@ -196,7 +202,7 @@ describe('Operation Merging Logic', () => {
       // Simulate that op1 executed first and pushed op2's position
       op1.mergeWith(op2);
       
-      expect(op1.data.toString()).toBe('abcdef');
+      expect(op1.data?.toString()).toBe('abcdef');
     });
 
     test('should handle null or empty data in insert operations', () => {
@@ -205,7 +211,7 @@ describe('Operation Merging Logic', () => {
       
       op1.mergeWith(op2);
       
-      expect(op1.data.toString()).toBe('hello');
+      expect(op1.data?.toString()).toBe('hello');
     });
   });
 
@@ -218,7 +224,7 @@ describe('Operation Merging Logic', () => {
       
       expect(op1.type).toBe(OperationType.DELETE);
       expect(op1.preExecutionPosition).toBe(10); // Should use minimum position
-      expect(op1.originalData.toString()).toBe('helloworld');
+      expect(op1.originalData?.toString()).toBe('helloworld');
       expect(op1.timestamp).toBe(mockTime); // Should keep earliest timestamp
     });
 
@@ -230,7 +236,7 @@ describe('Operation Merging Logic', () => {
       
       expect(op1.type).toBe(OperationType.DELETE);
       expect(op1.preExecutionPosition).toBe(10); // Should use minimum position
-      expect(op1.originalData.toString()).toBe('helloworld');
+      expect(op1.originalData?.toString()).toBe('helloworld');
     });
 
     test('should handle null or empty original data in delete operations', () => {
@@ -239,7 +245,7 @@ describe('Operation Merging Logic', () => {
       
       op1.mergeWith(op2);
       
-      expect(op1.originalData.toString()).toBe('hello');
+      expect(op1.originalData?.toString()).toBe('hello');
     });
   });
 
@@ -252,8 +258,8 @@ describe('Operation Merging Logic', () => {
       
       expect(op1.type).toBe(OperationType.OVERWRITE);
       expect(op1.preExecutionPosition).toBe(10);
-      expect(op1.data.toString()).toBe('inserted');
-      expect(op1.originalData.toString()).toBe('deleted');
+      expect(op1.data?.toString()).toBe('inserted');
+      expect(op1.originalData?.toString()).toBe('deleted');
       expect(op1.timestamp).toBe(mockTime); // Should keep earliest timestamp
     });
 
@@ -265,8 +271,8 @@ describe('Operation Merging Logic', () => {
       
       expect(op1.type).toBe(OperationType.OVERWRITE);
       expect(op1.preExecutionPosition).toBe(10);
-      expect(op1.data.length).toBe(0); // Net result is deletion
-      expect(op1.originalData.toString()).toBe('inserted');
+      expect(op1.data?.length).toBe(0); // Net result is deletion
+      expect(op1.originalData?.toString()).toBe('inserted');
     });
 
     test('should handle mixed operations with different positions', () => {
@@ -286,8 +292,8 @@ describe('Operation Merging Logic', () => {
       op1.mergeWith(op2);
       
       expect(op1.type).toBe(OperationType.OVERWRITE);
-      expect(op1.data.length).toBe(0);
-      expect(op1.originalData.length).toBe(0);
+      expect(op1.data?.length).toBe(0);
+      expect(op1.originalData?.length).toBe(0);
     });
   });
 
@@ -331,7 +337,7 @@ describe('Operation Merging Logic', () => {
       op2.mergeWith(op1); // Merge in reverse order
       
       // Should still process op1 first (lower operation number)
-      expect(op2.data.toString()).toBe('firstsecond');
+      expect(op2.data?.toString()).toBe('firstsecond');
     });
 
     test('should handle equal operation numbers gracefully', () => {
@@ -339,12 +345,12 @@ describe('Operation Merging Logic', () => {
       const op2 = createOperation(OperationType.INSERT, 15, 'world');
       
       // Force same operation number
-      op2.operationNumber = op1.operationNumber;
+      (op2 as any).operationNumber = op1.operationNumber;
       
       op1.mergeWith(op2);
       
       // Should still merge successfully
-      expect(op1.data.toString()).toBe('helloworld');
+      expect(op1.data?.toString()).toBe('helloworld');
     });
   });
 
@@ -376,7 +382,7 @@ describe('Operation Merging Logic', () => {
     });
 
     test('should handle unknown operation types', () => {
-      const op = createOperation('unknown_type', 10, 'hello');
+      const op = createOperation('unknown_type' as OperationType, 10, 'hello');
       expect(op.getSizeImpact()).toBe(0);
     });
   });
@@ -403,35 +409,35 @@ describe('Operation Merging Logic', () => {
     });
 
     test('should handle unknown operation types', () => {
-      const op = createOperation('unknown_type', 10, 'hello');
+      const op = createOperation('unknown_type' as OperationType, 10, 'hello');
       expect(op.getEndPosition()).toBe(10);
     });
   });
 
-  describe('_getInsertedLength method', () => {
+  describe('getInsertedLength method', () => {
     test('should calculate inserted length for insert operations', () => {
       const op = createOperation(OperationType.INSERT, 10, 'hello');
-      expect(op._getInsertedLength()).toBe(5);
+      expect((op as any).getInsertedLength()).toBe(5);
     });
 
     test('should calculate inserted length for delete operations', () => {
       const op = createOperation(OperationType.DELETE, 10, null, 'hello');
-      expect(op._getInsertedLength()).toBe(0);
+      expect((op as any).getInsertedLength()).toBe(0);
     });
 
     test('should calculate inserted length for overwrite operations', () => {
       const op = createOperation(OperationType.OVERWRITE, 10, 'hello', 'hi');
-      expect(op._getInsertedLength()).toBe(5);
+      expect((op as any).getInsertedLength()).toBe(5);
     });
 
     test('should handle null data in inserted length calculation', () => {
       const op = createOperation(OperationType.INSERT, 10, null);
-      expect(op._getInsertedLength()).toBe(0);
+      expect((op as any).getInsertedLength()).toBe(0);
     });
 
     test('should handle unknown operation types', () => {
-      const op = createOperation('unknown_type', 10, 'hello');
-      expect(op._getInsertedLength()).toBe(0);
+      const op = createOperation('unknown_type' as OperationType, 10, 'hello');
+      expect((op as any).getInsertedLength()).toBe(0);
     });
   });
 
@@ -465,8 +471,8 @@ describe('Operation Merging Logic', () => {
       
       op1.mergeWith(op2);
       
-      expect(op1.data.length).toBe(20000);
-      expect(op1.data.toString()).toBe(largeData1 + largeData2);
+      expect(op1.data?.length).toBe(20000);
+      expect(op1.data?.toString()).toBe(largeData1 + largeData2);
     });
 
     test('should handle merging operations with empty buffers', () => {
@@ -475,7 +481,7 @@ describe('Operation Merging Logic', () => {
       
       op1.mergeWith(op2);
       
-      expect(op1.data.length).toBe(0);
+      expect(op1.data?.length).toBe(0);
     });
 
     test('should preserve operation metadata during merge', () => {

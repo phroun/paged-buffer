@@ -2,18 +2,18 @@
  * Fixed File Safety Tests - Corrected for actual VPM behavior
  */
 
-const fs = require('fs').promises;
-const path = require('path');
-const { PagedBuffer } = require('../src/paged-buffer');
-const { FilePageStorage } = require('../src/storage/file-page-storage');
-const { BufferState } = require('../src/types/buffer-types');
-const { testUtils } = require('./setup');
+import { promises as fs } from 'fs';
+import * as path from 'path';
+import { PagedBuffer } from '../src/paged-buffer';
+import { FilePageStorage } from '../src/storage/file-page-storage';
+import { BufferState } from '../src/types/buffer-types';
+import { testUtils } from './setup';
 
 jest.setTimeout(15000);
 
 describe('File Safety and Corruption Handling', () => {
-  let buffer;
-  let storage;
+  let buffer: PagedBuffer;
+  let storage: FilePageStorage;
 
   beforeEach(async () => {
     storage = new FilePageStorage();
@@ -68,7 +68,7 @@ describe('File Safety and Corruption Handling', () => {
         try {
           await buffer.saveFile();
           // Save might succeed if no corruption was detected
-        } catch (error) {
+        } catch (error: any) {
           // Or save might fail due to corruption detection
           expect(error.message).toContain('partial data');
         }
@@ -101,7 +101,7 @@ describe('File Safety and Corruption Handling', () => {
           expect(notifications[0].severity).toBe('error');
         }
         
-      } catch (error) {
+      } catch (error: any) {
         // Save should fail due to corruption detection
         expect(error.message).toContain('partial data');
         expect(buffer.getState()).toBe(BufferState.DETACHED);
@@ -138,7 +138,7 @@ describe('File Safety and Corruption Handling', () => {
       // This simulates what would happen if corruption was detected
       const { MissingDataRange } = require('../src/paged-buffer');
       const missingRange = new MissingDataRange(20, 40, 12, 32, 'test_corruption');
-      buffer._markAsDetached('test corruption', [missingRange]);
+      (buffer as any)._markAsDetached('test corruption', [missingRange]);
       
       expect(buffer.getState()).toBe(BufferState.DETACHED);
       expect(buffer.hasChanges()).toBe(true); // Still has unsaved changes
@@ -173,7 +173,7 @@ describe('File Safety and Corruption Handling', () => {
       // Manually mark as detached
       const { MissingDataRange } = require('../src/paged-buffer');
       const missingRange = new MissingDataRange(20, 30, 12, 22, 'test_corruption');
-      buffer._markAsDetached('test corruption', [missingRange]);
+      (buffer as any)._markAsDetached('test corruption', [missingRange]);
       
       expect(buffer.getState()).toBe(BufferState.DETACHED);
       expect(buffer.canSaveToOriginal()).toBe(false);
@@ -204,7 +204,7 @@ describe('File Safety and Corruption Handling', () => {
       const { MissingDataRange } = require('../src/paged-buffer');
       const missingRange1 = new MissingDataRange(30, 50, 22, 42, 'file_corruption');
       const missingRange2 = new MissingDataRange(60, 80, 52, 72, 'file_corruption');
-      buffer._markAsDetached('test corruption', [missingRange1, missingRange2]);
+      (buffer as any)._markAsDetached('test corruption', [missingRange1, missingRange2]);
       
       expect(buffer.getState()).toBe(BufferState.DETACHED);
       
@@ -233,7 +233,7 @@ describe('File Safety and Corruption Handling', () => {
       // Create detached state with gaps between modifications
       const { MissingDataRange } = require('../src/paged-buffer');
       const missingRange = new MissingDataRange(50, 80, 44, 74, 'data_loss');
-      buffer._markAsDetached('test corruption', [missingRange]);
+      (buffer as any)._markAsDetached('test corruption', [missingRange]);
       
       expect(buffer.getState()).toBe(BufferState.DETACHED);
       
@@ -260,7 +260,7 @@ describe('File Safety and Corruption Handling', () => {
       // Create missing range that doesn't affect the cached/modified section
       const { MissingDataRange } = require('../src/paged-buffer');
       const missingRange = new MissingDataRange(30, 45, 22, 37, 'partial_loss');
-      buffer._markAsDetached('partial corruption', [missingRange]);
+      (buffer as any)._markAsDetached('partial corruption', [missingRange]);
       
       expect(buffer.getState()).toBe(BufferState.DETACHED);
       
@@ -293,7 +293,7 @@ describe('File Safety and Corruption Handling', () => {
       // Manually trigger detachment
       const { MissingDataRange } = require('../src/paged-buffer');
       const missingRange = new MissingDataRange(10, 20, 10, 20, 'notification_test');
-      buffer._markAsDetached('test notification', [missingRange]);
+      (buffer as any)._markAsDetached('test notification', [missingRange]);
       
       const notifications = mockHandler.notifications;
       
@@ -318,14 +318,14 @@ describe('File Safety and Corruption Handling', () => {
       // Manually mark as detached
       const { MissingDataRange } = require('../src/paged-buffer');
       const missingRange = new MissingDataRange(20, 30, 12, 22, 'save_test');
-      buffer._markAsDetached('save test', [missingRange]);
+      (buffer as any)._markAsDetached('save test', [missingRange]);
       
       expect(buffer.getState()).toBe(BufferState.DETACHED);
       
       try {
         await buffer.saveFile();
         fail('Expected save to be refused');
-      } catch (error) {
+      } catch (error: any) {
         expect(error.message).toContain('Refusing to save to original file path');
       }
       
@@ -414,7 +414,7 @@ describe('File Safety and Corruption Handling', () => {
         totalSize + 60,       // Original file end
         'undo_test'
       );
-      buffer._markAsDetached('undo test', [missingRange]);
+      (buffer as any)._markAsDetached('undo test', [missingRange]);
       
       expect(buffer.getState()).toBe(BufferState.DETACHED);
       
@@ -509,7 +509,7 @@ describe('File Safety and Corruption Handling', () => {
       // Simulate detachment: detached state but may or may not have changes
       const { MissingDataRange } = require('../src/paged-buffer');
       const missingRange = new MissingDataRange(10, 20, 10, 20, 'test');
-      buffer._markAsDetached('test detachment', [missingRange]);
+      (buffer as any)._markAsDetached('test detachment', [missingRange]);
       
       expect(buffer.getState()).toBe(BufferState.DETACHED);
       expect(buffer.canSaveToOriginal()).toBe(false);

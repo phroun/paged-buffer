@@ -767,7 +767,7 @@ class VirtualPageManager implements IVirtualPageManager {
     if (this.lineAndMarksManager && marksInSecondHalf?.length > 0) {
       logger.debug('[DEBUG] (JRD)');
       logger.debug(marksInSecondHalf);
-      this.lineAndMarksManager.insertMarksFromRelative(0, marksInSecondHalf, newDescriptor.virtualStart);
+      this.lineAndMarksManager.insertMarksFromRelative(newDescriptor.virtualStart, marksInSecondHalf);
     }
     
     // Update original page data
