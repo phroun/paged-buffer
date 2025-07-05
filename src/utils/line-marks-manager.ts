@@ -630,7 +630,7 @@ class LineAndMarksManager implements ILineAndMarksManager {
     await this.vpm.insertAt(position, data);
     
     logger.debug('[DEBUG] Marks after VPM operations:', this.getAllMarks());
-    
+
     // Update marks that were after the overwrite region
     for (const markInfo of marksToShift) {
       const newPos = markInfo.originalPos + netSizeChange;

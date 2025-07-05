@@ -654,7 +654,7 @@ class VirtualPageManager implements IVirtualPageManager {
       pageInfo.updateData(newData);
       
       // Update page-level marks for this modification
-      pageInfo.updateAfterModification(relativeStart, relativeEnd - relativeStart, Buffer.alloc(0));
+      //pageInfo.updateAfterModification(relativeStart, relativeEnd - relativeStart, Buffer.alloc(0));
       
       descriptor.isDirty = true;
       
